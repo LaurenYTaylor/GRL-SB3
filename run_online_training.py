@@ -23,14 +23,14 @@ DEFAULT_CONFIG = {"eval_freq": 10000,
 
 seeds = [0]
 
-def hyperparam_training(tune_config):
-    tune_config["eval_freq"] = tune.choice([10000, 20000, 30000])
-    tune_config["n_eval_episodes"] = tune.choice([100, 150, 200])
-    tune_config["algo_config"]["buffer_size"] = tune.choice([10000, 100000, 1000000])
-    tune_config["grl_config"]["n_curriculum_stages"] = tune.choice([10, 15, 20])
-    tune_config["learning_rate"] = tune.loguniform(1e-7, 1e-3)
-    tune_config["tau"] = tune.loguniform(1e-4, 1e-2)
-    tune_config["train_freq"] = tune.choice([1, 8, 32, 64])
+def hyperparam_training(hyperparam_config):
+    hyperparam_config["eval_freq"] = tune.choice([10000, 20000, 30000])
+    hyperparam_config["n_eval_episodes"] = tune.choice([100, 150, 200])
+    hyperparam_config["algo_config"]["buffer_size"] = tune.choice([10000, 100000, 1000000])
+    hyperparam_config["grl_config"]["n_curriculum_stages"] = tune.choice([10, 15, 20])
+    hyperparam_config["learning_rate"] = tune.loguniform(1e-7, 1e-3)
+    hyperparam_config["tau"] = tune.loguniform(1e-4, 1e-2)
+    hyperparam_config["train_freq"] = tune.choice([1, 8, 32, 64])
 
     tuner = tune.Tuner(
             run_grl_training,
@@ -38,7 +38,7 @@ def hyperparam_training(tune_config):
                 num_samples=50,
                 scheduler=ASHAScheduler(time_attr="training_iteration",grace_period=5, metric="eval_return", mode="max"),
             ),
-            param_space=tune_config,
+            param_space=hyperparam_config,
             run_config=tune.RunConfig(storage_path=Path("./hyperparam_results").resolve(), name="tuning")
         )
     results = tuner.fit()
