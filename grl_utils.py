@@ -275,7 +275,7 @@ def run_grl_training(config):
             project="sb3-sac-curriculum_hyperparam",
             sync_tensorboard=True,
             monitor_gym=True,
-            config={"env_name": env_name, "algorithm": algo, "seed": config["seed"], "training_steps": config["training_steps"]},
+            config=config,
             save_code=False,
         )    
     wandb_cb = WandbCallback(gradient_save_freq=10000,model_save_path=f"saved_models/{env_name}_{algo}_{config['seed']}", verbose=2)
