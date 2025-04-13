@@ -36,7 +36,7 @@ def hyperparam_training(tune_config):
             run_grl_training,
             tune_config=tune.TuneConfig(
                 num_samples=50,
-                scheduler=ASHAScheduler(time_attr="global_timestep",grace_period=100000, metric="eval_return", mode="max"),
+                scheduler=ASHAScheduler(time_attr="training_iteration",grace_period=5, metric="eval_return", mode="max"),
             ),
             param_space=tune_config,
             run_config=tune.RunConfig(storage_path=Path("./hyperparam_results").resolve(), name="tuning")
