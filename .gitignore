@@ -1,0 +1,6 @@
+wandb/*
+saved_models/*
+pretrained_1million/*
+hyperparam_results/*
+__pycache__
+
