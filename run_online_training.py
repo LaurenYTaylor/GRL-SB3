@@ -44,7 +44,7 @@ def hyperparam_training(hyperparam_config):
     results = tuner.fit()
 
 if __name__ == "__main__":
-    for env_name in env_names[:2]:
+    for env_name in env_names:
         for seed in seeds:
             config = copy.deepcopy(DEFAULT_CONFIG)
             config["algo"] = algorithm_dict[env_name]
