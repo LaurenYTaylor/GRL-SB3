@@ -148,6 +148,7 @@ class CurriculumMgmtCallback(BaseCallback):
         self.model.guide_curriculum_val = self.guide_curriculum_val
         self.model.learner_or_guide_action = CURRICULUM_FNS[self.curriculum_config["horizon_fn"]]["action_choice_fn"]
         self.model.curriculum_stages = CURRICULUM_FNS[self.curriculum_config["horizon_fn"]]["generate_curriculum_fn"](self.guide_curriculum_val, self.curriculum_config["n_curriculum_stages"])
+        
         self.model.variance_fn = self.curriculum_config["variance_fn"]
         self.model.curriculum_val_t = 0
         self.model.curriculum_stage_idx = 0
@@ -178,12 +179,17 @@ class CurriculumStageUpdateCallback(BaseCallback):
             self.best_eval_return = self.parent.model.guide_return
         
         prev_best = self.best_eval_return - self.parent.model.tolerance * self.best_eval_return
-        if len(self.parent.rolling_n_returns) == self.parent.model.rolling_mean_n and np.mean(self.parent.rolling_n_returns) > prev_best:
+        if len(self.parent.rolling_n_returns) == self.parent.model.rolling_mean_n:
             tune.report({"eval_return":self.parent.model.guide_return})
-            self.parent.model.curriculum_stage_idx += 1
-            if self.parent.rolling_n_returns[-1] > self.best_eval_return:
-                self.best_eval_return = self.parent.rolling_n_returns[-1]
-        print(f"Best Return: {self.best_eval_return}, Latest Return: {self.parent.last_mean_reward}, Current Stage Idx: {self.parent.model.curriculum_stage_idx}/{len(self.parent.model.curriculum_stages)}, Current Stage: {self.parent.model.curriculum_stages[self.parent.model.curriculum_stage_idx]}")
+            if np.mean(self.parent.rolling_n_returns) > prev_best:
+                self.parent.model.curriculum_stage_idx += 1
+                if self.parent.rolling_n_returns[-1] > self.best_eval_return:
+                    self.best_eval_return = self.parent.rolling_n_returns[-1]
+        try:
+            current_stage = self.parent.model.curriculum_stages[self.parent.model.curriculum_stage_idx]
+        except IndexError:
+            current_stage = 0
+        print(f"Best Return: {self.best_eval_return}, Latest Return: {self.parent.last_mean_reward}, Current Stage Idx: {self.parent.model.curriculum_stage_idx}/{len(self.parent.model.curriculum_stages)}, Current Stage: {current_stage}")
         
         self.parent.logger.record("eval/curriculum_stage_idx", self.model.curriculum_stage_idx)
         self.parent.logger.record("eval/eval_rolling_mean", np.mean(self.parent.rolling_n_returns))

@@ -13,8 +13,8 @@ DEFAULT_CONFIG = {"eval_freq": 10000,
           "n_eval_episodes": 150,
           "training_steps": 1000000,
           "grl_config": {"horizon_fn": "agent_type",
-                         "n_curriculum_stages": 10, "variance_fn": None, "rolling_mean_n": 5,
-                         "tolerance": 0.01,
+                         "n_curriculum_stages": 10, "variance_fn": None, "rolling_mean_n": 3,
+                         "tolerance": 0.05,
                          "guide_randomness": 0.1},
           "algo_config": {"buffer_size": 100000,
                           "batch_size": 256,"learning_starts": 0,
@@ -24,13 +24,13 @@ DEFAULT_CONFIG = {"eval_freq": 10000,
 seeds = [0]
 
 def hyperparam_training(hyperparam_config):
-    hyperparam_config["eval_freq"] = tune.choice([10000, 20000, 30000])
-    hyperparam_config["n_eval_episodes"] = tune.choice([100, 150, 200])
-    hyperparam_config["algo_config"]["buffer_size"] = tune.choice([10000, 100000, 1000000])
-    hyperparam_config["grl_config"]["n_curriculum_stages"] = tune.choice([10, 15, 20])
-    hyperparam_config["learning_rate"] = tune.loguniform(1e-7, 1e-3)
+    hyperparam_config["eval_freq"] = tune.choice([5000, 10000])
+    hyperparam_config["n_eval_episodes"] = tune.choice([200, 400])
+    hyperparam_config["algo_config"]["buffer_size"] = tune.choice([100000, 1000000])
+    hyperparam_config["grl_config"]["n_curriculum_stages"] = tune.choice([15, 20])
+    hyperparam_config["learning_rate"] = tune.loguniform(1e-7, 1e-5)
     hyperparam_config["tau"] = tune.loguniform(1e-4, 1e-2)
-    hyperparam_config["train_freq"] = tune.choice([1, 8, 32, 64])
+    hyperparam_config["train_freq"] = tune.choice([32, 64, 128])
 
     tuner = tune.Tuner(
             run_grl_training,
@@ -51,8 +51,11 @@ if __name__ == "__main__":
             config["env_name"] = env_name
             config["pretrained_path"] = paths_dict[env_name]
             config["seed"] = seed
-            #run_grl_training(config)
             hyperparam_training(config)
-            config = copy.deepcopy(DEFAULT_CONFIG)
-            config["n_curriculum_stages"] = 0
-            run_grl_training(config)
+            # config = copy.deepcopy(DEFAULT_CONFIG)
+            # config["grl_config"]["n_curriculum_stages"] = 0
+            # config["algo"] = algorithm_dict[env_name]
+            # config["env_name"] = env_name
+            # config["pretrained_path"] = paths_dict[env_name]
+            # config["seed"] = seed
+            # run_grl_training(config)
