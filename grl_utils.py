@@ -412,7 +412,7 @@ def run_grl_training(config):
 
     # Set up the model callbacks
     run = wandb.init(
-            project="sb3-sac-curriculum_test",
+            project="sb3-sac-curriculum_hyperparam",
             sync_tensorboard=True,
             monitor_gym=True,
             config=config,

@@ -28,7 +28,7 @@ def hyperparam_training(hyperparam_config):
     hyperparam_config["n_eval_episodes"] = tune.choice([100, 250, 500])
     #hyperparam_config["algo_config"]["buffer_size"] = tune.choice([100000, 1000000])
     hyperparam_config["grl_config"]["n_curriculum_stages"] = tune.choice([15, 20, 25])
-    hyperparam_config["grl_config"]["tolerance"] = tune.uniform([0.05, 0.2])
+    hyperparam_config["grl_config"]["tolerance"] = tune.uniform(0.05, 0.2)
     #hyperparam_config["learning_rate"] = tune.loguniform(1e-7, 1e-5)
     #hyperparam_config["tau"] = tune.loguniform(1e-4, 1e-2)
     #hyperparam_config["train_freq"] = tune.choice([32, 64, 128])
@@ -36,7 +36,7 @@ def hyperparam_training(hyperparam_config):
     tuner = tune.Tuner(
             run_grl_training,
             tune_config=tune.TuneConfig(
-                num_samples=50,
+                num_samples=1,
                 scheduler=ASHAScheduler(time_attr="training_iteration",grace_period=5, metric="eval_return", mode="max"),
             ),
             param_space=hyperparam_config,
