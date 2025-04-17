@@ -24,13 +24,14 @@ DEFAULT_CONFIG = {"eval_freq": 10000,
 seeds = [0]
 
 def hyperparam_training(hyperparam_config):
-    hyperparam_config["eval_freq"] = tune.choice([5000, 10000])
-    hyperparam_config["n_eval_episodes"] = tune.choice([200, 400])
-    hyperparam_config["algo_config"]["buffer_size"] = tune.choice([100000, 1000000])
-    hyperparam_config["grl_config"]["n_curriculum_stages"] = tune.choice([15, 20])
-    hyperparam_config["learning_rate"] = tune.loguniform(1e-7, 1e-5)
-    hyperparam_config["tau"] = tune.loguniform(1e-4, 1e-2)
-    hyperparam_config["train_freq"] = tune.choice([32, 64, 128])
+    hyperparam_config["eval_freq"] = tune.choice([5000, 10000, 20000])
+    hyperparam_config["n_eval_episodes"] = tune.choice([100, 250, 500])
+    #hyperparam_config["algo_config"]["buffer_size"] = tune.choice([100000, 1000000])
+    hyperparam_config["grl_config"]["n_curriculum_stages"] = tune.choice([15, 20, 25])
+    hyperparam_config["grl_config"]["tolerance"] = tune.uniform([0.05, 0.2])
+    #hyperparam_config["learning_rate"] = tune.loguniform(1e-7, 1e-5)
+    #hyperparam_config["tau"] = tune.loguniform(1e-4, 1e-2)
+    #hyperparam_config["train_freq"] = tune.choice([32, 64, 128])
 
     tuner = tune.Tuner(
             run_grl_training,
