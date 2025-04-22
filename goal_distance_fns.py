@@ -98,4 +98,6 @@ def goal_dist_calc(state, env):
     if isinstance(env.get_attr("spec"), list):
         env = env.envs[0]
     goal_dist_fn = GOAL_MAP[env.unwrapped.spec.id]
+    if state.shape[0] == 1:
+        state = state[0]
     return goal_dist_fn(state, env)
