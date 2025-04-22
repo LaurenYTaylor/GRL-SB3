@@ -2,6 +2,7 @@ import numpy as np
 import torch
 from goal_distance_fns import goal_dist_calc
 
+
 def variance_action_choice(config):
     """
     Determine whether to use the learner or guide based on the state variance.
@@ -26,13 +27,15 @@ def variance_action_choice(config):
 
     """
     use_learner = False
-    var = config.vf(torch.Tensor(config["obs"]))
-
+    var = config["variance_fn"](torch.Tensor(config["obs"])).detach().cpu()
+    var = torch.clip(torch.exp(var), 1e-4, 100000000)
+    var = var.item()
     if np.isnan(config["curriculum_stage"]):
         return True, var
-    if (var <= config["curriculum_stage"]):
+    if var <= config["curriculum_stage"]:
         use_learner = True
     return use_learner, var
+
 
 def timestep_action_choice(config):
     """
@@ -59,9 +62,10 @@ def timestep_action_choice(config):
     use_learner = False
     if np.isnan(config["curriculum_stage"]):
         return True, config["time_step"]
-    if (config["time_step"] >= config["curriculum_stage"]):
+    if config["time_step"] >= config["curriculum_stage"]:
         use_learner = True
     return use_learner, config["time_step"]
+
 
 def agent_type_action_choice(config):
     """
@@ -86,14 +90,15 @@ def agent_type_action_choice(config):
 
     """
     use_learner = False
+    # check if threshold will be exceeded if the learner is chosen to be used
     if_learner_used = config["curriculum_val_ep"][:]
     if_learner_used.append(1)
     curriculum_val_ep = np.mean(if_learner_used)
 
     if np.isnan(config["curriculum_stage"]):
-        return True,1
-    if (curriculum_val_ep <= config["curriculum_stage"]):
-        use_learner = (np.random.sample() < config["curriculum_stage"])
+        return True, 1
+    if curriculum_val_ep <= config["curriculum_stage"]:
+        use_learner = np.random.sample() < config["curriculum_stage"]
     return use_learner, use_learner
 
 
@@ -123,7 +128,6 @@ def goal_distance_action_choice(config):
     goal_dist = goal_dist_calc(config["obs"], config["env"])
     if np.isnan(config["curriculum_stage"]):
         return True, goal_dist
-    if (goal_dist <= config["curriculum_stage"]):
+    if goal_dist <= config["curriculum_stage"]:
         use_learner = True
     return use_learner, goal_dist
-
