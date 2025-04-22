@@ -58,7 +58,8 @@ def run_episodes(
                         action = actor.predict(next_state, "cpu")
                     except RuntimeError:
                         action = actor.predict(next_state, "cuda")
-            next_state, reward, term, trunc, _ = env.step(action[0])
+                    action = action[0]
+            next_state, reward, term, trunc, _ = env.step(action)
             if "antmaze" in env.unwrapped.spec.id:
                 reward -= 1
             next_done = term or trunc
