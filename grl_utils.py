@@ -552,10 +552,13 @@ def run_grl_training(config, seed):
     )
 
     # Train
-    model.learn(
-        total_timesteps=config["training_steps"],
-        callback=[wandb_cb, curriculum_mgmt_cb, eval_cb],
-    )
+    try:
+        model.learn(
+            total_timesteps=config["training_steps"],
+            callback=[wandb_cb, curriculum_mgmt_cb, eval_cb],
+        )
+    except:
+        pass
     run.finish()
 
 
