@@ -149,7 +149,7 @@ def evaluate_imperfect_policy(
             # replace the dummy zero
             ep_curric_vals = [curric_val]
         if np.random.random() < randomness:
-            actions = env.action_space.sample()
+            actions = [env.action_space.sample()]
         new_observations, rewards, dones, infos = env.step(actions)
         current_rewards += rewards
         current_lengths += 1
@@ -327,7 +327,7 @@ def evaluate_policy_patch(
                 deterministic=deterministic,
             )
             if np.random.random() < model.guide_randomness:
-                actions = env.action_space.sample()
+                actions = [env.action_space.sample()]
         new_observations, rewards, dones, infos = env.step(actions)
         current_rewards += rewards
         current_lengths += 1
