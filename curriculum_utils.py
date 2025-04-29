@@ -19,20 +19,27 @@ def static_accumulator(v):
     return 1
 
 
-def max_to_min_curriculum(guide_stage, n_curriculum_stages):
+def max_to_min_curriculum(guide_vals, n_curriculum_stages):
     """
     Generates a max to min curriculum (for time step).
     """
-    curric = np.linspace(guide_stage, 0, n_curriculum_stages + 1)
-    return curric[1:]
+    # curric = np.linspace(guide_stage, 0, n_curriculum_stages + 1)
+    curric = np.percentile(
+        guide_vals, np.linspace(100 - 100 / n_curriculum_stages, 0, n_curriculum_stages)
+    )
+    return curric
 
 
-def min_to_max_curriculum(guide_stage, n_curriculum_stages):
+def min_to_max_curriculum(guide_vals, n_curriculum_stages):
     """
     Generates a min to max curriculum (for goal distance, variance and agent type).
     """
-    curric = np.linspace(0, guide_stage, n_curriculum_stages + 1)
-    return curric[1:]
+    # curric = np.linspace(0, guide_stage, n_curriculum_stages + 1)
+    curric = np.percentile(
+        guide_vals, np.linspace(100 / n_curriculum_stages, 100, n_curriculum_stages)
+    )
+    # return curric[1:]
+    return curric
 
 
 CURRICULUM_FNS = {

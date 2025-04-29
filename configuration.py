@@ -2,7 +2,7 @@ import os
 import copy
 
 env_names = [
-    # "AdroitHandPen-v1",
+    "AdroitHandPen-v1",
     "AdroitHandHammer-v1",
     "AdroitHandRelocate-v1",
     "AdroitHandDoor-v1",

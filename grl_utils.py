@@ -181,7 +181,7 @@ def evaluate_imperfect_policy(
                         episode_rewards.append(current_rewards[i])
                         episode_lengths.append(current_lengths[i])
                         episode_counts[i] += 1
-                    curric_vals.append(np.max(ep_curric_vals))
+                    curric_vals.extend(ep_curric_vals)
                     ep_curric_vals = [0]
                     current_rewards[i] = 0
                     current_lengths[i] = 0
@@ -190,7 +190,6 @@ def evaluate_imperfect_policy(
 
         if render:
             env.render()
-
     mean_reward = np.mean(episode_rewards)
     std_reward = np.std(episode_rewards)
     if reward_threshold is not None:
@@ -199,6 +198,8 @@ def evaluate_imperfect_policy(
             f"{mean_reward:.2f} < {reward_threshold:.2f}"
         )
     if return_guide_vals:
+        if return_episode_rewards:
+            return episode_rewards, episode_lengths, curric_vals
         guide_val = curriculum_fns["accumulator_fn"](curric_vals)
         return mean_reward, std_reward, guide_val
     if return_episode_rewards:
@@ -287,10 +288,20 @@ def evaluate_policy_patch(
     current_rewards = np.zeros(n_envs)
     current_lengths = np.zeros(n_envs, dtype="int")
     ep_curriculum_values = [0]
+    learner_usage_values = []
     observations = env.reset()
     states = None
     episode_starts = np.ones((env.num_envs,), dtype=bool)
     while (episode_counts < episode_count_targets).any():
+        choice_config = {
+            "curriculum_stage": model.curriculum_stages[model.curriculum_stage_idx],
+            "time_step": current_lengths[-1],
+            "curriculum_val_ep": ep_curriculum_values,
+            "env": env,
+            "obs": observations,
+            "variance_fn": model.variance_fn,
+        }
+        use_learner, curriculum_val = model.learner_or_guide_action(choice_config)
         if model.curriculum_stage_idx == len(model.curriculum_stages) - 1:
             use_learner = True
         elif len(model.curriculum_stages) == 0:
@@ -298,20 +309,14 @@ def evaluate_policy_patch(
         elif current_lengths[-1] == 0:
             # This can put the learner over its % use limit if it dies quickly
             use_learner = False
-            choice_config = {
-                "curriculum_stage": model.curriculum_stages[model.curriculum_stage_idx],
-                "time_step": current_lengths[-1],
-                "curriculum_val_ep": ep_curriculum_values,
-                "env": env,
-                "obs": observations,
-                "variance_fn": model.variance_fn,
-            }
-            use_learner, curriculum_val = model.learner_or_guide_action(choice_config)
-            if current_lengths[0] > 0:
-                ep_curric_vals.append(curriculum_val)
-            else:
-                # replace the dummy zero
-                ep_curric_vals = [curriculum_val]
+
+        if current_lengths[0] > 0:
+            ep_curriculum_values.append(curriculum_val)
+            ep_learner_usage.append(int(use_learner))
+        else:
+            # replace the dummy zero
+            ep_curriculum_values = [curriculum_val]
+            ep_learner_usage = [int(use_learner)]
         if use_learner:
             actions, states = model.predict(
                 observations,  # type: ignore[arg-type]
@@ -354,7 +359,6 @@ def evaluate_policy_patch(
                             episode_rewards.append(info["episode"]["r"])
                             episode_lengths.append(info["episode"]["l"])
                             # Only increment at the real end of an episode
-                            ep_curriculum_values = [0]
                             episode_counts[i] += 1
                     else:
                         episode_rewards.append(current_rewards[i])
@@ -362,12 +366,15 @@ def evaluate_policy_patch(
                         episode_counts[i] += 1
                     current_rewards[i] = 0
                     current_lengths[i] = 0
+                    ep_curriculum_values = [0]
+                    learner_usage_values.append(np.mean(ep_learner_usage))
 
         observations = new_observations
 
         if render:
             env.render()
 
+    mean_learner_usage = np.mean(learner_usage_values)
     mean_reward = np.mean(episode_rewards)
     std_reward = np.std(episode_rewards)
     if reward_threshold is not None:
@@ -376,8 +383,8 @@ def evaluate_policy_patch(
             f"{mean_reward:.2f} < {reward_threshold:.2f}"
         )
     if return_episode_rewards:
-        return episode_rewards, episode_lengths
-    return mean_reward, std_reward
+        return episode_rewards, episode_lengths, learner_usage_values
+    return mean_reward, std_reward, mean_learner_usage
 
 
 def _sample_action_patch(
@@ -492,23 +499,21 @@ def run_grl_training(config, seed):
             variance_learner = VarianceLearner(obs_dim, action_dim, None, None)
             variance_learner.vf = vf
         except FileNotFoundError:
-            variance_learner = VarianceLearner(
-                obs_dim, action_dim, 0.05, guide_policy
-            ).run_training(env, n_updates=n_updates, evaluate=True)
-        variance_learner.vf.training = False
-        config["grl_config"]["variance_fn"] = variance_learner.vf
-        guide_policy.variance_fn = variance_learner.vf
-    guide_return, guide_std, guide_curric_val = evaluate_imperfect_policy(
+            variance_learner = VarianceLearner(obs_dim, action_dim, 0.05, guide_policy)
+            vf = variance_learner.run_training(env, n_updates=n_updates, evaluate=True)
+        vf.training = False
+        config["grl_config"]["variance_fn"] = vf
+        guide_policy.variance_fn = vf
+    guide_return, guide_std, guide_curric_vals = evaluate_imperfect_policy(
         guide_policy,
         eval_env,
         return_guide_vals=True,
+        return_episode_rewards=True,
         n_eval_episodes=500,
         randomness=config["grl_config"]["guide_randomness"],
         curriculum_fns=CURRICULUM_FNS[config["grl_config"]["horizon_fn"]],
     )
-    print(
-        f"Guide return: {guide_return}+\-{guide_std}, Guide curriculum val: {guide_curric_val}"
-    )
+    print(f"Guide return: {np.mean(guide_return)}+\-{np.mean(guide_std)}")
 
     # Patch the algo with modified functions
     SAC._sample_action = _sample_action_patch
@@ -528,7 +533,7 @@ def run_grl_training(config, seed):
         verbose=2,
     )
     curriculum_mgmt_cb = CurriculumMgmtCallback(
-        guide_policy, guide_return, guide_curric_val, config["grl_config"]
+        guide_policy, np.mean(guide_return), guide_curric_vals, config["grl_config"]
     )
     curriculum_update_cb = CurriculumStageUpdateCallback()
     eval_cb = ModifiedEvalCallback(
@@ -552,13 +557,11 @@ def run_grl_training(config, seed):
     )
 
     # Train
-    try:
-        model.learn(
-            total_timesteps=config["training_steps"],
-            callback=[wandb_cb, curriculum_mgmt_cb, eval_cb],
-        )
-    except:
-        pass
+    model.learn(
+        total_timesteps=config["training_steps"],
+        callback=[wandb_cb, curriculum_mgmt_cb, eval_cb],
+    )
+
     run.finish()
 
 

@@ -58,15 +58,17 @@ class ModifiedEvalCallback(EvalCallback):
 
             # Reset success rate buffer
             self._is_success_buffer = []
-            episode_rewards, episode_lengths = grl_utils.evaluate_policy_patch(
-                self.model,
-                self.eval_env,
-                n_eval_episodes=self.n_eval_episodes,
-                render=self.render,
-                deterministic=self.deterministic,
-                return_episode_rewards=True,
-                warn=self.warn,
-                callback=self._log_success_callback,
+            episode_rewards, episode_lengths, learner_usage = (
+                grl_utils.evaluate_policy_patch(
+                    self.model,
+                    self.eval_env,
+                    n_eval_episodes=self.n_eval_episodes,
+                    render=self.render,
+                    deterministic=self.deterministic,
+                    return_episode_rewards=True,
+                    warn=self.warn,
+                    callback=self._log_success_callback,
+                )
             )
 
             if self.log_path is not None:
@@ -90,6 +92,8 @@ class ModifiedEvalCallback(EvalCallback):
                     **kwargs,  # type: ignore[arg-type]
                 )
 
+            mean_learner_usage = np.mean(learner_usage)
+            np.std(learner_usage)
             mean_reward, std_reward = np.mean(episode_rewards), np.std(episode_rewards)
             mean_ep_length, std_ep_length = np.mean(episode_lengths), np.std(
                 episode_lengths
@@ -104,6 +108,7 @@ class ModifiedEvalCallback(EvalCallback):
                 print(f"Episode length: {mean_ep_length:.2f} +/- {std_ep_length:.2f}")
             # Add to current Logger
             self.logger.record("eval/mean_reward", float(mean_reward))
+            self.logger.record("eval/mean_learner_usage", float(mean_learner_usage))
             self.logger.record("eval/mean_ep_length", mean_ep_length)
 
             if len(self._is_success_buffer) > 0:
