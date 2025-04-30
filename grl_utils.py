@@ -8,12 +8,14 @@ import warnings
 import gymnasium_robotics
 import numpy as np
 import gymnasium as gym
+from copy import deepcopy
 
 from ray import tune
 from pathlib import Path
 from stable_baselines3 import SAC, PPO
 from gymnasium import spaces
 
+from stable_baselines3.common.buffers import ReplayBuffer
 from ray.tune.schedulers import ASHAScheduler
 from stable_baselines3.common.noise import ActionNoise
 from wandb.integration.sb3 import WandbCallback
@@ -413,8 +415,6 @@ def _sample_action_patch(
         self.use_sde and self.use_sde_at_warmup
     ):
         # Warmup phase
-        # unscaled_action = np.array([self.action_space.sample() for _ in range(n_envs)])
-        # import pdb;pdb.set_trace()
         if np.random.random() < self.guide_randomness:
             unscaled_action = np.array(
                 [self.action_space.sample() for _ in range(n_envs)]
@@ -423,6 +423,7 @@ def _sample_action_patch(
             unscaled_action = self.guide_policy.predict(
                 self._last_obs, deterministic=True
             )[0]
+        use_learner = False
     else:
         # Note: when using continuous actions,
         # we assume that the policy uses tanh to scale the action
@@ -450,7 +451,9 @@ def _sample_action_patch(
             unscaled_action, _ = self.predict(self._last_obs, deterministic=False)
         else:
             if np.random.random() < self.guide_randomness:
-                unscaled_action = self.action_space.sample()
+                unscaled_action = np.array(
+                    [self.action_space.sample() for _ in range(n_envs)]
+                )
             else:
                 unscaled_action, _ = self.guide_policy.predict(
                     self._last_obs, deterministic=True
@@ -471,7 +474,76 @@ def _sample_action_patch(
         # Discrete case, no need to normalize or clip
         buffer_action = unscaled_action
         action = buffer_action
+    self.last_use_learner = use_learner
     return action, buffer_action
+
+
+def _store_transition_patch(
+    self,
+    replay_buffer: ReplayBuffer,
+    buffer_action: np.ndarray,
+    new_obs: Union[np.ndarray, dict[str, np.ndarray]],
+    reward: np.ndarray,
+    dones: np.ndarray,
+    infos: list[dict[str, Any]],
+) -> None:
+    """
+    Store transition in the replay buffer.
+    We store the normalized action and the unnormalized observation.
+    It also handles terminal observations (because VecEnv resets automatically).
+
+    :param replay_buffer: Replay buffer object where to store the transition.
+    :param buffer_action: normalized action
+    :param new_obs: next observation in the current episode
+        or first observation of the episode (when dones is True)
+    :param reward: reward for the current transition
+    :param dones: Termination signal
+    :param infos: List of additional information about the transition.
+        It may contain the terminal observations and information about timeout.
+    """
+    # Store only the unnormalized version
+    if not infos[-1]["last_use_learner"]:
+        return
+    if self._vec_normalize_env is not None:
+        new_obs_ = self._vec_normalize_env.get_original_obs()
+        reward_ = self._vec_normalize_env.get_original_reward()
+    else:
+        # Avoid changing the original ones
+        self._last_original_obs, new_obs_, reward_ = self._last_obs, new_obs, reward
+
+    # Avoid modification by reference
+    next_obs = deepcopy(new_obs_)
+    # As the VecEnv resets automatically, new_obs is already the
+    # first observation of the next episode
+    for i, done in enumerate(dones):
+        if done and infos[i].get("terminal_observation") is not None:
+            if isinstance(next_obs, dict):
+                next_obs_ = infos[i]["terminal_observation"]
+                # VecNormalize normalizes the terminal observation
+                if self._vec_normalize_env is not None:
+                    next_obs_ = self._vec_normalize_env.unnormalize_obs(next_obs_)
+                # Replace next obs for the correct envs
+                for key in next_obs.keys():
+                    next_obs[key][i] = next_obs_[key]
+            else:
+                next_obs[i] = infos[i]["terminal_observation"]
+                # VecNormalize normalizes the terminal observation
+                if self._vec_normalize_env is not None:
+                    next_obs[i] = self._vec_normalize_env.unnormalize_obs(next_obs[i, :])  # type: ignore[assignment]
+
+    replay_buffer.add(
+        self._last_original_obs,  # type: ignore[arg-type]
+        next_obs,  # type: ignore[arg-type]
+        buffer_action,
+        reward_,
+        dones,
+        infos,
+    )
+
+    self._last_obs = new_obs
+    # Save the unnormalized observation
+    if self._vec_normalize_env is not None:
+        self._last_original_obs = new_obs_
 
 
 def run_grl_training(config, seed):
@@ -509,7 +581,7 @@ def run_grl_training(config, seed):
         eval_env,
         return_guide_vals=True,
         return_episode_rewards=True,
-        n_eval_episodes=500,
+        n_eval_episodes=config["pretrain_eval_episodes"],
         randomness=config["grl_config"]["guide_randomness"],
         curriculum_fns=CURRICULUM_FNS[config["grl_config"]["horizon_fn"]],
     )
@@ -518,6 +590,7 @@ def run_grl_training(config, seed):
     # Patch the algo with modified functions
     SAC._sample_action = _sample_action_patch
     sb3_eval.evaluate_policy = evaluate_policy_patch
+    # SAC._store_transition = _store_transition_patch
 
     # Set up the model callbacks
     run = wandb.init(

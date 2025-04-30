@@ -32,7 +32,7 @@ def adroit_door(state, _):
         mult = 0.00001
     else:
         mult = np.abs(state[28])
-    distance = (1 / mult) * (1 - state[38])
+    distance = np.linalg.norm(state[34:36]) + (1 / mult) * (1 - state[38])
     return distance
 
 

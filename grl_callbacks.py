@@ -197,6 +197,7 @@ class CurriculumMgmtCallback(BaseCallback):
         else:
             self.model.ep_timestep += 1
             self.model.ep_curriculum_values.append(self.model.curriculum_val_t)
+        self.locals["infos"][-1]["last_use_learner"] = self.model.last_use_learner
         return True
 
 

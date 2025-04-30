@@ -38,7 +38,11 @@ def min_to_max_curriculum(guide_vals, n_curriculum_stages):
     curric = np.percentile(
         guide_vals, np.linspace(100 / n_curriculum_stages, 100, n_curriculum_stages)
     )
-    # return curric[1:]
+    return curric
+
+
+def agent_type_curriculum(_, n_curriculum_stages):
+    curric = np.linspace(0, 1, n_curriculum_stages + 1)[1:]
     return curric
 
 
@@ -51,7 +55,7 @@ CURRICULUM_FNS = {
     "agent_type": {
         "action_choice_fn": agent_type_action_choice,
         "accumulator_fn": static_accumulator,
-        "generate_curriculum_fn": min_to_max_curriculum,
+        "generate_curriculum_fn": agent_type_curriculum,
     },
     "goal_dist": {
         "action_choice_fn": goal_distance_action_choice,
