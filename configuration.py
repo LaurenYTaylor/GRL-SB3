@@ -32,7 +32,7 @@ DEFAULT_CONFIG = {
         "n_curriculum_stages": 20,
         "variance_fn": None,
         "rolling_mean_n": 1,
-        "tolerance": 0.05,
+        "tolerance": 0.1,
         "guide_randomness": 0.05,
     },
     "algo_config": {

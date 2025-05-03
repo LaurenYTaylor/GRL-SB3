@@ -220,7 +220,11 @@ class CurriculumStageUpdateCallback(BaseCallback):
         )
         if len(self.parent.rolling_n_returns) == self.parent.model.rolling_mean_n:
             tune.report({"eval_return": self.parent.last_mean_reward})
-            if np.mean(self.parent.rolling_n_returns) > prev_best:
+            if np.mean(
+                self.parent.rolling_n_returns
+            ) > prev_best and self.parent.model.curriculum_stage_idx < (
+                len(self.parent.model.curriculum_stages) - 1
+            ):
                 self.parent.model.curriculum_stage_idx += 1
                 if self.parent.rolling_n_returns[-1] > self.best_eval_return:
                     self.best_eval_return = self.parent.rolling_n_returns[-1]
