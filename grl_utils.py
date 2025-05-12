@@ -31,7 +31,11 @@ from grl_callbacks import (
 )
 from variance_trainer import StateDepFunction, VarianceLearner
 from curriculum_utils import CURRICULUM_FNS
-from experimental_utils import train_patch
+from experimental_utils import (
+    train_patch,
+    _store_transition_patch,
+    collect_rollouts_patch,
+)
 
 MODELS = {"SAC": SAC, "PPO": PPO}
 
@@ -130,7 +134,7 @@ def evaluate_imperfect_policy(
         except AttributeError:
             variance_fn = None
         curric_config = {
-            "curriculum_stage": np.nan,
+            "curriculum_stages": [],
             "time_step": current_lengths[-1],
             "curriculum_val_ep": ep_curric_vals,
             "env": env,
@@ -295,7 +299,8 @@ def evaluate_policy_patch(
     episode_starts = np.ones((env.num_envs,), dtype=bool)
     while (episode_counts < episode_count_targets).any():
         choice_config = {
-            "curriculum_stage": model.curriculum_stages[model.curriculum_stage_idx],
+            "curriculum_stages": model.curriculum_stages,
+            "curriculum_stage_idx": model.curriculum_stage_idx,
             "time_step": current_lengths[-1],
             "curriculum_val_ep": ep_curriculum_values,
             "env": env,
@@ -305,12 +310,6 @@ def evaluate_policy_patch(
         use_learner, curriculum_val = model.learner_or_guide_action(choice_config)
         if model.curriculum_stage_idx == len(model.curriculum_stages) - 1:
             use_learner = True
-        elif len(model.curriculum_stages) == 0:
-            use_learner = False
-        elif current_lengths[-1] == 0:
-            # This can put the learner over its % use limit if it dies quickly
-            use_learner = False
-
         if current_lengths[0] > 0:
             ep_curriculum_values.append(curriculum_val)
             ep_learner_usage.append(int(use_learner))
@@ -410,19 +409,21 @@ def _sample_action_patch(
         The two differs when the action space is not normalized (bounds are not [-1, 1]).
     """
     # Select action randomly or according to policy
+    choice_config = {
+        "curriculum_stages": self.curriculum_stages,
+        "curriculum_stage_idx": self.curriculum_stage_idx,
+        "time_step": self.ep_timestep,
+        "curriculum_val_ep": self.ep_curriculum_values,
+        "env": self.get_env(),
+        "obs": self._last_obs,
+        "variance_fn": self.variance_fn,
+    }
     if self.num_timesteps < learning_starts and not (
         self.use_sde and self.use_sde_at_warmup
     ):
         # Warmup phase
-        if np.random.random() < self.guide_randomness:
-            unscaled_action = np.array(
-                [self.action_space.sample() for _ in range(n_envs)]
-            )
-        else:
-            unscaled_action = self.guide_policy.predict(
-                self._last_obs, deterministic=True
-            )[0]
-        use_learner = False
+
+        use_learner, self.curriculum_val_t = self.learner_or_guide_action(choice_config)
     else:
         # Note: when using continuous actions,
         # we assume that the policy uses tanh to scale the action
@@ -430,33 +431,21 @@ def _sample_action_patch(
         assert self._last_obs is not None, "self._last_obs was not set"
         if self.curriculum_stage_idx == len(self.curriculum_stages) - 1:
             use_learner = True
-        elif len(self.curriculum_stages) == 0:
-            use_learner = False
-        elif self.ep_timestep == 0:
-            use_learner = False
         else:
-            choice_config = {
-                "curriculum_stage": self.curriculum_stages[self.curriculum_stage_idx],
-                "time_step": self.ep_timestep,
-                "curriculum_val_ep": self.ep_curriculum_values,
-                "env": self.get_env(),
-                "obs": self._last_obs,
-                "variance_fn": self.variance_fn,
-            }
             use_learner, self.curriculum_val_t = self.learner_or_guide_action(
                 choice_config
             )
-        if use_learner:
-            unscaled_action, _ = self.predict(self._last_obs, deterministic=False)
+    if use_learner:
+        unscaled_action, _ = self.predict(self._last_obs, deterministic=False)
+    else:
+        if np.random.random() < self.guide_randomness:
+            unscaled_action = np.array(
+                [self.action_space.sample() for _ in range(n_envs)]
+            )
         else:
-            if np.random.random() < self.guide_randomness:
-                unscaled_action = np.array(
-                    [self.action_space.sample() for _ in range(n_envs)]
-                )
-            else:
-                unscaled_action, _ = self.guide_policy.predict(
-                    self._last_obs, deterministic=True
-                )
+            unscaled_action, _ = self.guide_policy.predict(
+                self._last_obs, deterministic=True
+            )
 
     # Rescale the action from [low, high] to [-1, 1]
     if isinstance(self.action_space, spaces.Box):
@@ -474,13 +463,21 @@ def _sample_action_patch(
         buffer_action = unscaled_action
         action = buffer_action
     self.last_use_learner = use_learner
-    return action, buffer_action
+
+    if not self.guide_in_buffer:
+        return action, buffer_action, use_learner
+    else:
+        return action, buffer_action
 
 
 def run_grl_training(config, seed):
     algo = config["algo"]
     env_name = config["env_name"]
     pretrained_path = config["pretrained_path"]
+    if config["grl_config"]["n_curriculum_stages"] == 0:
+        assert (
+            config["grl_config"]["horizon_fn"] == "agent_type"
+        ), "If n_curriculum_stages=0 (run guide only), the horizon function must be agent_type"
     config["seed"] = seed
     env = gym.make(env_name)
     eval_env = gym.make(env_name)
@@ -516,17 +513,20 @@ def run_grl_training(config, seed):
         randomness=config["grl_config"]["guide_randomness"],
         curriculum_fns=CURRICULUM_FNS[config["grl_config"]["horizon_fn"]],
     )
-    print(f"Guide return: {np.mean(guide_return)}+\-{np.mean(guide_std)}")
+    # print(f"Guide return: {np.mean(guide_return)}+\-{np.mean(guide_std)}")
 
     # Patch the algo with modified functions
     SAC._sample_action = _sample_action_patch
-    SAC.train = train_patch
+    # SAC.train = train_patch
     sb3_eval.evaluate_policy = evaluate_policy_patch
     # SAC._store_transition = _store_transition_patch
+    if not config["grl_config"]["guide_in_buffer"]:
+        SAC.collect_rollouts = collect_rollouts_patch
 
     # Set up the model callbacks
     run = wandb.init(
-        project="sb3-sac-curriculum_all_envs",
+        entity="lauren-taylor-the-university-of-adelaide",
+        project="sb3-sac-curricula_all_envs",
         sync_tensorboard=True,
         monitor_gym=True,
         config=config,
@@ -534,7 +534,7 @@ def run_grl_training(config, seed):
     )
     wandb_cb = WandbCallback(
         gradient_save_freq=10000,
-        model_save_path=f"saved_models/{env_name}_{algo}_{config['seed']}",
+        # model_save_path=f"saved_models/{env_name}_{algo}_{config['seed']}",
         verbose=2,
     )
     curriculum_mgmt_cb = CurriculumMgmtCallback(
@@ -556,6 +556,7 @@ def run_grl_training(config, seed):
     model = SAC(
         "MlpPolicy",
         env,
+        stats_window_size=200,
         **config["algo_config"],
         tensorboard_log=f"./saved_models/{env_name}_{algo}_{config['seed']}",
         verbose=1,
@@ -565,6 +566,7 @@ def run_grl_training(config, seed):
     model.learn(
         total_timesteps=config["training_steps"],
         callback=[wandb_cb, curriculum_mgmt_cb, eval_cb],
+        log_interval=5,
     )
 
     run.finish()

@@ -30,14 +30,27 @@ for e_i, env_name in enumerate(env_names):
         done = False
         obs, infos = env.reset()
         steps = 0
+        total_reward = 0
+        success_flag = False
         while not done:
             action = env.action_space.sample()
-            if np.random.random() < 1:
+            if np.random.random() < 0.95:
                 action = guide_policy.predict(obs)[0]
             obs, reward, term, trunc, info = env.step(action)
-            distance = adroit_relocate(obs, env)
-            print(distance)
+            total_reward += reward
+            # distance = adroit_relocate(obs, env)
+            # success = info.get("is_success", False)
+            success = False
+            nail_pos = env.unwrapped.data.site_xpos[
+                env.unwrapped.target_obj_site_id
+            ].ravel()
+            goal_pos = env.unwrapped.data.site_xpos[env.unwrapped.goal_site_id].ravel()
+            if np.linalg.norm(goal_pos - nail_pos) < 0.01 and not success_flag:
+                success = True
+                print(f"Step: {steps}, success={success}, reward={total_reward}")
+                success_flag = True
             done = term or trunc
             env.render()
             steps += 1
+        print(f"Episode {episode + 1} finished with total reward: {total_reward}")
     env.close()

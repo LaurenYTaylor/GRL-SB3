@@ -6,23 +6,28 @@ from grl_utils import run_grl_training, ray_grl_training, hyperparam_training
 import configuration as exp_config
 
 
-def train(env_name, horizon_fn, seeds, tune=False, debug=False):
+def train(env_name, horizon_fn, seeds, guide_in_buffer=False, tune=False, debug=False):
     if tune:
-        hyperparam_training(get_config(env_name, horizon_fn))
+        hyperparam_training(get_config(env_name, horizon_fn, guide_in_buffer))
     elif not debug:
         if env_name == "all":
             env_names = exp_config.env_names
         else:
             env_names = [env_name]
         if horizon_fn == "all":
-            horizon_fns = ["agent_type", "time_step", "goal_dist", "variance"]
+            # horizon_fns = ["agent_type", "time_step", "goal_dist", "variance"]
+            horizon_fns = ["exp_time_step", "time_step"]
+
         else:
             horizon_fns = [horizon_fn]
+        if guide_in_buffer == "all":
+            guide_in_buffer = [True, False]
         object_references = [
-            ray_grl_training.remote(get_config(env_name, horizon_fn), seed)
+            ray_grl_training.remote(get_config(env_name, horizon_fn, guide_in), seed)
             for env_name in env_names
             for seed in range(seeds)
             for horizon_fn in horizon_fns
+            for guide_in in guide_in_buffer
         ]
 
         all_data = []
@@ -31,7 +36,7 @@ def train(env_name, horizon_fn, seeds, tune=False, debug=False):
             data = ray.get(finished)
             all_data.extend(data)
     else:
-        run_grl_training(get_config(env_name, horizon_fn), 0)
+        run_grl_training(get_config(env_name, horizon_fn, guide_in_buffer), 0)
 
 
 if __name__ == "__main__":
@@ -46,8 +51,15 @@ if __name__ == "__main__":
     argparse.add_argument(
         "--horizon_fn",
         type=str,
-        help="Currculum horizon function",
+        help="Curriculum horizon function",
         default="agent_type",
+        required=False,
+    )
+    argparse.add_argument(
+        "--guide_in_buffer",
+        type=str,
+        help="Whether to add guide transitions to the buffer",
+        default="False",
         required=False,
     )
     argparse.add_argument(
@@ -67,4 +79,13 @@ if __name__ == "__main__":
         "--debug", action="store_true", help="Run in debug (no Ray)", required=False
     )
     args = argparse.parse_args()
-    train(args.env_name, args.horizon_fn, args.num_seeds, args.tune, args.debug)
+    if args.guide_in_buffer != "all":
+        args.guide_in_buffer = bool(args.guide_in_buffer)
+    train(
+        args.env_name,
+        args.horizon_fn,
+        args.num_seeds,
+        args.guide_in_buffer,
+        args.tune,
+        args.debug,
+    )

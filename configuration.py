@@ -36,19 +36,21 @@ DEFAULT_CONFIG = {
         "guide_randomness": 0.05,
     },
     "algo_config": {
-        "buffer_size": 10000,
+        "buffer_size": 1000000,
         "batch_size": 256,
-        "learning_starts": 1000,
-        "train_freq": 64,
-        "gradient_steps": 8,
+        "learning_starts": 0,
+        "train_freq": 1,
+        "gradient_steps": 1,
+        "learning_rate": 0.0005,
     },
 }
 
 
-def get_config(env_name, horizon_fn):
+def get_config(env_name, horizon_fn, guide_in):
     config = copy.deepcopy(DEFAULT_CONFIG)
     config["algo"] = algorithm_dict[env_name]
     config["env_name"] = env_name
     config["pretrained_path"] = paths_dict[env_name]
+    config["grl_config"]["guide_in_buffer"] = guide_in
     config["grl_config"]["horizon_fn"] = horizon_fn
     return config

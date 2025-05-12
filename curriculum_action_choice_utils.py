@@ -30,11 +30,56 @@ def variance_action_choice(config):
     var = config["variance_fn"](torch.Tensor(config["obs"])).detach().cpu()
     var = torch.clip(torch.exp(var), 1e-4, 100000000)
     var = var.item()
-    if np.isnan(config["curriculum_stage"]):
-        return True, var
+    if len(config["curriculum_stages"]) == 0:
+        return False, var
     if var <= config["curriculum_stage"]:
         use_learner = True
     return use_learner, var
+
+
+def exp_timestep_action_choice(config):
+    """
+    Determine whether to use the learner or guide based on the timestep.
+    Unused parameter placeholders ensure the horizon functions have the same signature.
+
+    Parameters
+    ----------
+    config["time_step"] : int
+        The current timestep.
+    _s : Any
+        State, not used.
+    _e : Any
+        Env, not used.
+    config : JsrlTrainConfig
+        The configuration parameters for the JSRL training process.
+
+    Returns
+    -------
+    Tuple[bool, int]
+        A tuple containing a boolean indicating whether to use the learner and the current timestep.
+
+    """
+    if len(config["curriculum_stages"]) == 0:
+        return False, config["time_step"]
+
+    remaining_stages = len(config["curriculum_stages"]) - config["curriculum_stage_idx"]
+    # f_log = lambda c, n: c*np.emath.logn(remaining_stages, (remaining_stages**(1/c)-1)/remaining_stages+1)
+    f_exp = lambda d, n, x: d * np.exp(np.log((1 + d) / d) / n * x) - d
+    if remaining_stages == 1:
+        compare_float = 1.0
+    else:
+        stages = config["curriculum_stages"]
+        compare_float = np.clip(
+            f_exp(
+                0.01, stages[-config["curriculum_stage_idx"] - 1], config["time_step"]
+            ),
+            0.0,
+            1.0,
+        )
+    use_learner = False
+    if np.random.random() < compare_float:
+        use_learner = True
+    return use_learner, compare_float
 
 
 def timestep_action_choice(config):
@@ -60,9 +105,12 @@ def timestep_action_choice(config):
 
     """
     use_learner = False
-    if np.isnan(config["curriculum_stage"]):
-        return True, config["time_step"]
-    if config["time_step"] >= config["curriculum_stage"]:
+    if len(config["curriculum_stages"]) == 0:
+        return False, config["time_step"]
+    if (
+        config["time_step"]
+        >= config["curriculum_stages"][config["curriculum_stage_idx"]]
+    ):
         use_learner = True
     return use_learner, config["time_step"]
 
@@ -92,14 +140,14 @@ def agent_type_action_choice(config):
     use_learner = False
     # check if threshold will be exceeded if the learner is chosen to be used
     if_learner_used = config["curriculum_val_ep"][:]
-    if_learner_used.append(1)
+    if_learner_used.append(1.0)
     curriculum_val_ep = np.mean(if_learner_used)
 
-    if np.isnan(config["curriculum_stage"]):
-        return True, 1
+    if len(config["curriculum_stages"]) == 0:
+        return False, 0.0
     if curriculum_val_ep <= config["curriculum_stage"]:
         use_learner = np.random.sample() < config["curriculum_stage"]
-    return use_learner, use_learner
+    return use_learner, float(use_learner)
 
 
 def goal_distance_action_choice(config):
@@ -126,8 +174,8 @@ def goal_distance_action_choice(config):
     """
     use_learner = False
     goal_dist = goal_dist_calc(config["obs"], config["env"])
-    if np.isnan(config["curriculum_stage"]):
-        return True, goal_dist
+    if len(config["curriculum_stages"]) == 0:
+        return False, goal_dist
     if goal_dist <= config["curriculum_stage"]:
         use_learner = True
     return use_learner, goal_dist

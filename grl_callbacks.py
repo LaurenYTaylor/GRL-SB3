@@ -169,18 +169,22 @@ class CurriculumMgmtCallback(BaseCallback):
         self.model.rolling_mean_n = self.curriculum_config["rolling_mean_n"]
         self.model.tolerance = self.curriculum_config["tolerance"]
         self.model.guide_curriculum_val = self.guide_curriculum_val
+        self.model.guide_in_buffer = self.curriculum_config["guide_in_buffer"]
         self.model.learner_or_guide_action = CURRICULUM_FNS[
             self.curriculum_config["horizon_fn"]
         ]["action_choice_fn"]
-        self.model.curriculum_stages = CURRICULUM_FNS[
-            self.curriculum_config["horizon_fn"]
-        ]["generate_curriculum_fn"](
-            self.guide_curriculum_val, self.curriculum_config["n_curriculum_stages"]
-        )
+        if self.curriculum_config["n_curriculum_stages"] > 0:
+            self.model.curriculum_stages = CURRICULUM_FNS[
+                self.curriculum_config["horizon_fn"]
+            ]["generate_curriculum_fn"](
+                self.guide_curriculum_val, self.curriculum_config["n_curriculum_stages"]
+            )
+        else:
+            self.model.curriculum_stages = []
         self.model.variance_fn = self.curriculum_config["variance_fn"]
-        self.model.curriculum_val_t = 0
+        self.model.curriculum_val_t = 0.0
         self.model.curriculum_stage_idx = 0
-        self.model.ep_curriculum_values = [0]
+        self.model.ep_curriculum_values = [self.model.curriculum_val_t]
         self.model.ep_timestep = 0
 
     def _on_step(self) -> bool:
@@ -191,7 +195,8 @@ class CurriculumMgmtCallback(BaseCallback):
             )
             self.model.ep_timestep = 0
             self.model.ep_curriculum_values = [self.model.curriculum_val_t]
-        elif self.model.ep_timestep == 1:
+        elif self.model.ep_timestep == 0:
+            # replace dummy 0 with actual
             self.model.ep_timestep += 1
             self.model.ep_curriculum_values = [self.model.curriculum_val_t]
         else:
