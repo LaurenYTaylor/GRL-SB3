@@ -6,9 +6,9 @@ env_names = [
     "AdroitHandHammer-v1",
     "AdroitHandRelocate-v1",
     "AdroitHandDoor-v1",
-    "Pusher-v5",
-    "InvertedDoublePendulum-v5",
-    "Hopper-v5",
+    # "Pusher-v5",
+    # "InvertedDoublePendulum-v5",
+    # "Hopper-v5",
 ]
 algorithms = ["SAC", "SAC", "PPO", "SAC", "SAC", "SAC", "PPO"]
 algorithm_dict = dict(zip(env_names, algorithms))
@@ -36,7 +36,7 @@ DEFAULT_CONFIG = {
         "guide_randomness": 0.05,
     },
     "algo_config": {
-        "buffer_size": 1000000,
+        "buffer_size": 500000,
         "batch_size": 256,
         "learning_starts": 0,
         "train_freq": 1,

@@ -463,7 +463,6 @@ def _sample_action_patch(
         buffer_action = unscaled_action
         action = buffer_action
     self.last_use_learner = use_learner
-
     if not self.guide_in_buffer:
         return action, buffer_action, use_learner
     else:

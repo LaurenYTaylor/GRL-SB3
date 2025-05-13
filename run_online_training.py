@@ -22,6 +22,8 @@ def train(env_name, horizon_fn, seeds, guide_in_buffer=False, tune=False, debug=
             horizon_fns = [horizon_fn]
         if guide_in_buffer == "all":
             guide_in_buffer = [True, False]
+        else:
+            guide_in_buffer = [guide_in_buffer]
         object_references = [
             ray_grl_training.remote(get_config(env_name, horizon_fn, guide_in), seed)
             for env_name in env_names
@@ -59,7 +61,7 @@ if __name__ == "__main__":
         "--guide_in_buffer",
         type=str,
         help="Whether to add guide transitions to the buffer",
-        default="False",
+        default="0",
         required=False,
     )
     argparse.add_argument(
@@ -80,7 +82,7 @@ if __name__ == "__main__":
     )
     args = argparse.parse_args()
     if args.guide_in_buffer != "all":
-        args.guide_in_buffer = bool(args.guide_in_buffer)
+        args.guide_in_buffer = bool(int(args.guide_in_buffer))
     train(
         args.env_name,
         args.horizon_fn,

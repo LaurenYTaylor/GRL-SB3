@@ -170,6 +170,7 @@ class CurriculumMgmtCallback(BaseCallback):
         self.model.tolerance = self.curriculum_config["tolerance"]
         self.model.guide_curriculum_val = self.guide_curriculum_val
         self.model.guide_in_buffer = self.curriculum_config["guide_in_buffer"]
+        self.model.horizon_fn = self.curriculum_config["horizon_fn"]
         self.model.learner_or_guide_action = CURRICULUM_FNS[
             self.curriculum_config["horizon_fn"]
         ]["action_choice_fn"]
