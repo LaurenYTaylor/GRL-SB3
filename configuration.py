@@ -11,7 +11,8 @@ env_names = [
     "InvertedDoublePendulum-v5",
     "Hopper-v5",
 ]
-algorithms = ["SAC", "SAC", "PPO", "SAC", "SAC", "SAC", "PPO", "SAC"]
+# algorithms = ["SAC", "SAC", "PPO", "SAC", "SAC", "SAC", "PPO", "SAC"]
+algorithms = ["SAC", "SAC", "PPO"]
 algorithm_dict = dict(zip(env_names, algorithms))
 paths_dict = dict(
     zip(

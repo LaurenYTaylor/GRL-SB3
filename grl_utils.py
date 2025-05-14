@@ -524,12 +524,12 @@ def run_grl_training(config, seed):
 
     # Set up the model callbacks
     if config["debug"]:
-        pass
+        project = "sb3-sac-curricula_debug"
     else:
-        pass
+        project = "sb3-sac-curricula_all_envs"
     run = wandb.init(
         entity="lauren-taylor-the-university-of-adelaide",
-        project="sb3-sac-curricula_all_envs",
+        project=project,
         sync_tensorboard=True,
         monitor_gym=True,
         config=config,
