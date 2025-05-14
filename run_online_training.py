@@ -8,7 +8,7 @@ import configuration as exp_config
 
 def train(env_name, horizon_fn, seeds, guide_in_buffer=False, tune=False, debug=False):
     if tune:
-        hyperparam_training(get_config(env_name, horizon_fn, guide_in_buffer))
+        hyperparam_training(get_config(env_name, horizon_fn, guide_in_buffer, debug))
     elif not debug:
         if env_name == "all":
             env_names = exp_config.env_names
@@ -25,7 +25,9 @@ def train(env_name, horizon_fn, seeds, guide_in_buffer=False, tune=False, debug=
         else:
             guide_in_buffer = [guide_in_buffer]
         object_references = [
-            ray_grl_training.remote(get_config(env_name, horizon_fn, guide_in), seed)
+            ray_grl_training.remote(
+                get_config(env_name, horizon_fn, guide_in, debug), seed
+            )
             for env_name in env_names
             for seed in range(seeds)
             for horizon_fn in horizon_fns
@@ -38,7 +40,7 @@ def train(env_name, horizon_fn, seeds, guide_in_buffer=False, tune=False, debug=
             data = ray.get(finished)
             all_data.extend(data)
     else:
-        run_grl_training(get_config(env_name, horizon_fn, guide_in_buffer), 0)
+        run_grl_training(get_config(env_name, horizon_fn, guide_in_buffer, debug), 0)
 
 
 if __name__ == "__main__":

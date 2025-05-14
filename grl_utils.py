@@ -523,6 +523,10 @@ def run_grl_training(config, seed):
         SAC.collect_rollouts = collect_rollouts_patch
 
     # Set up the model callbacks
+    if config["debug"]:
+        pass
+    else:
+        pass
     run = wandb.init(
         entity="lauren-taylor-the-university-of-adelaide",
         project="sb3-sac-curricula_all_envs",

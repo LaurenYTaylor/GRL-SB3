@@ -2,15 +2,16 @@ import os
 import copy
 
 env_names = [
-    "AdroitHandPen-v1",
-    "AdroitHandHammer-v1",
-    "AdroitHandRelocate-v1",
-    "AdroitHandDoor-v1",
-    # "Pusher-v5",
-    # "InvertedDoublePendulum-v5",
-    # "Hopper-v5",
+    # "AdroitHandPen-v1",
+    # "AdroitHandHammer-v1",
+    # "AdroitHandRelocate-v1",
+    # "AdroitHandDoor-v1",
+    # "AntMaze_UMaze-v5"
+    "Pusher-v5",
+    "InvertedDoublePendulum-v5",
+    "Hopper-v5",
 ]
-algorithms = ["SAC", "SAC", "PPO", "SAC", "SAC", "SAC", "PPO"]
+algorithms = ["SAC", "SAC", "PPO", "SAC", "SAC", "SAC", "PPO", "SAC"]
 algorithm_dict = dict(zip(env_names, algorithms))
 paths_dict = dict(
     zip(
@@ -46,11 +47,12 @@ DEFAULT_CONFIG = {
 }
 
 
-def get_config(env_name, horizon_fn, guide_in):
+def get_config(env_name, horizon_fn, guide_in, debug):
     config = copy.deepcopy(DEFAULT_CONFIG)
-    config["algo"] = algorithm_dict[env_name]
+    config["algo"] = algorithm_dict.get(env_name, "SAC")
     config["env_name"] = env_name
     config["pretrained_path"] = paths_dict[env_name]
     config["grl_config"]["guide_in_buffer"] = guide_in
     config["grl_config"]["horizon_fn"] = horizon_fn
+    config["debug"] = debug
     return config

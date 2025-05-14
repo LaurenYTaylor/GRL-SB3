@@ -7,8 +7,10 @@ from stable_baselines3.common.callbacks import EvalCallback
 import numpy as np
 import os
 from goal_distance_fns import adroit_relocate
+import torch
 
 env_names = [
+    "AntMaze_UMaze-v2",
     "AdroitHandPen-v1",
     "AdroitHandHammer-v1",
     "AdroitHandRelocate-v1",
@@ -20,12 +22,21 @@ env_names = [
 training_steps = 1000000
 episodes = 100
 for e_i, env_name in enumerate(env_names):
-    if e_i != 1:
+    if e_i != 0:
         continue
-    env = gymnasium.make(env_name, render_mode="human")
+    env = gymnasium.make(env_name, render_mode="human", disable_env_checker=True)
 
     pretrained_path = f"{os.getcwd()}/pretrained_1million/{env_name}_sac.zip"
-    guide_policy = SAC.load(pretrained_path, device="cpu")
+    try:
+        guide_policy = SAC.load(pretrained_path, device="cpu")
+    except FileNotFoundError:
+        from pathlib import Path
+
+        policy_file = Path(pretrained_path[:-8] + "/checkpoint_1999999.pt")
+        policy = torch.load(policy_file)
+        import pdb
+
+        pdb.set_trace()
     for episode in range(episodes):
         done = False
         obs, infos = env.reset()
