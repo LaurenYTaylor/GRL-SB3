@@ -30,7 +30,7 @@ DEFAULT_CONFIG = {
     "training_steps": 1000000,
     "grl_config": {
         "horizon_fn": "variance",
-        "n_curriculum_stages": 20,
+        "n_curriculum_stages": 10,
         "variance_fn": None,
         "rolling_mean_n": 1,
         "tolerance": 0.1,
