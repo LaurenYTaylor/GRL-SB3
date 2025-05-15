@@ -58,7 +58,7 @@ class ModifiedEvalCallback(EvalCallback):
 
             # Reset success rate buffer
             self._is_success_buffer = []
-            episode_rewards, episode_lengths, learner_usage = (
+            episode_rewards, episode_lengths, learner_usage, episode_successes = (
                 grl_utils.evaluate_policy_patch(
                     self.model,
                     self.eval_env,
@@ -110,6 +110,7 @@ class ModifiedEvalCallback(EvalCallback):
             self.logger.record("eval/mean_reward", float(mean_reward))
             self.logger.record("eval/mean_learner_usage", float(mean_learner_usage))
             self.logger.record("eval/mean_ep_length", mean_ep_length)
+            self.logger.record("eval/success_rate", np.mean(episode_successes))
 
             if len(self._is_success_buffer) > 0:
                 success_rate = np.mean(self._is_success_buffer)
@@ -174,6 +175,12 @@ class CurriculumMgmtCallback(BaseCallback):
         self.model.learner_or_guide_action = CURRICULUM_FNS[
             self.curriculum_config["horizon_fn"]
         ]["action_choice_fn"]
+        if self.curriculum_config["horizon_fn"] == "exp_time_step":
+            self.model.exp_time_step_coeff = self.curriculum_config[
+                "exp_time_step_coeff"
+            ]
+        else:
+            self.model.exp_time_step_coeff = None
         if self.curriculum_config["n_curriculum_stages"] > 0:
             self.model.curriculum_stages = CURRICULUM_FNS[
                 self.curriculum_config["horizon_fn"]

@@ -2,17 +2,17 @@ import os
 import copy
 
 env_names = [
-    # "AdroitHandPen-v1",
-    # "AdroitHandHammer-v1",
-    # "AdroitHandRelocate-v1",
-    # "AdroitHandDoor-v1",
+    "AdroitHandPen-v1",
+    "AdroitHandHammer-v1",
+    "AdroitHandRelocate-v1",
+    "AdroitHandDoor-v1",
     # "AntMaze_UMaze-v5"
-    "Pusher-v5",
-    "InvertedDoublePendulum-v5",
-    "Hopper-v5",
+    # "Pusher-v5",
+    # "InvertedDoublePendulum-v5",
+    # "Hopper-v5",
 ]
-# algorithms = ["SAC", "SAC", "PPO", "SAC", "SAC", "SAC", "PPO", "SAC"]
-algorithms = ["SAC", "SAC", "PPO"]
+algorithms = ["SAC", "SAC", "PPO", "SAC"]  # , #"SAC", "SAC", "PPO", "SAC"]
+# algorithms = ["SAC", "SAC", "PPO"]
 algorithm_dict = dict(zip(env_names, algorithms))
 paths_dict = dict(
     zip(
@@ -25,7 +25,7 @@ paths_dict = dict(
 )
 
 DEFAULT_CONFIG = {
-    "eval_freq": 10000,
+    "eval_freq": 5000,
     "n_eval_episodes": 150,
     "pretrain_eval_episodes": 500,
     "training_steps": 1000000,
@@ -36,6 +36,7 @@ DEFAULT_CONFIG = {
         "rolling_mean_n": 1,
         "tolerance": 0.1,
         "guide_randomness": 0.05,
+        "exp_time_step_coeff": 0.001,
     },
     "algo_config": {
         "buffer_size": 500000,
@@ -44,6 +45,7 @@ DEFAULT_CONFIG = {
         "train_freq": 1,
         "gradient_steps": 1,
         "learning_rate": 0.0005,
+        "ent_coef": 5,
     },
 }
 

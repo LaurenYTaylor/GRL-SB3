@@ -17,7 +17,6 @@ def train(env_name, horizon_fn, seeds, guide_in_buffer=False, tune=False, debug=
         if horizon_fn == "all":
             # horizon_fns = ["agent_type", "time_step", "goal_dist", "variance"]
             horizon_fns = ["exp_time_step", "time_step"]
-
         else:
             horizon_fns = [horizon_fn]
         if guide_in_buffer == "all":

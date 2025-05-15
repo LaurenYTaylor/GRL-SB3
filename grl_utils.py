@@ -283,6 +283,7 @@ def evaluate_policy_patch(
     n_envs = env.num_envs
     episode_rewards = []
     episode_lengths = []
+    episode_successes = []
 
     episode_counts = np.zeros(n_envs, dtype="int")
     # Divides episodes among different sub environments in the vector as evenly as possible
@@ -306,6 +307,7 @@ def evaluate_policy_patch(
             "env": env,
             "obs": observations,
             "variance_fn": model.variance_fn,
+            "exp_time_step_coeff": model.exp_time_step_coeff,
         }
         use_learner, curriculum_val = model.learner_or_guide_action(choice_config)
         if model.curriculum_stage_idx == len(model.curriculum_stages) - 1:
@@ -348,6 +350,10 @@ def evaluate_policy_patch(
                     callback(locals(), globals())
 
                 if dones[i]:
+                    if "success" in info.keys():
+                        episode_successes.append(info["success"])
+                    elif "is_success" in info.keys():
+                        episode_successes.append(info["is_success"])
                     if is_monitor_wrapped:
                         # Atari wrapper can send a "done" signal when
                         # the agent loses a life, but it does not correspond
@@ -383,8 +389,8 @@ def evaluate_policy_patch(
             f"{mean_reward:.2f} < {reward_threshold:.2f}"
         )
     if return_episode_rewards:
-        return episode_rewards, episode_lengths, learner_usage_values
-    return mean_reward, std_reward, mean_learner_usage
+        return episode_rewards, episode_lengths, learner_usage_values, episode_successes
+    return mean_reward, std_reward, mean_learner_usage, episode_successes
 
 
 def _sample_action_patch(
@@ -417,6 +423,7 @@ def _sample_action_patch(
         "env": self.get_env(),
         "obs": self._last_obs,
         "variance_fn": self.variance_fn,
+        "exp_time_step_coeff": self.exp_time_step_coeff,
     }
     if self.num_timesteps < learning_starts and not (
         self.use_sde and self.use_sde_at_warmup

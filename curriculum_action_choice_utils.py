@@ -71,7 +71,9 @@ def exp_timestep_action_choice(config):
         stages = config["curriculum_stages"]
         compare_float = np.clip(
             f_exp(
-                0.01, stages[-config["curriculum_stage_idx"] - 1], config["time_step"]
+                config["exp_time_step_coeff"],
+                stages[-config["curriculum_stage_idx"] - 1],
+                config["time_step"],
             ),
             0.0,
             1.0,
