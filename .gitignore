@@ -4,3 +4,4 @@ pretrained_1million/*
 hyperparam_results/*
 __pycache__
 *.npy
+*.png
