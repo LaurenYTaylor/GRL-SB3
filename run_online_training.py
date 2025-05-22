@@ -6,17 +6,31 @@ from grl_utils import run_grl_training, ray_grl_training, hyperparam_training
 import configuration as exp_config
 
 
-def train(env_name, horizon_fn, seeds, guide_in_buffer=False, tune=False, debug=False):
+def train(
+    env_name,
+    horizon_fn,
+    seeds,
+    guide_in_buffer=True,
+    tune=False,
+    debug=False,
+    sample_perc=0.5,
+):
     if tune:
-        hyperparam_training(get_config(env_name, horizon_fn, guide_in_buffer, debug))
+        hyperparam_training(
+            get_config(env_name, horizon_fn, guide_in_buffer, debug, sample_perc)
+        )
     elif not debug:
         if env_name == "all":
             env_names = exp_config.env_names
+        elif env_name == "adroit":
+            env_names = exp_config.adroit_env_names
+        elif env_name == "extra":
+            env_names = exp_config.extra_env_names
         else:
             env_names = [env_name]
         if horizon_fn == "all":
             # horizon_fns = ["agent_type", "time_step", "goal_dist", "variance"]
-            horizon_fns = ["exp_time_step", "time_step"]
+            horizon_fns = ["reward_var", "time_step"]
         else:
             horizon_fns = [horizon_fn]
         if guide_in_buffer == "all":
@@ -25,7 +39,7 @@ def train(env_name, horizon_fn, seeds, guide_in_buffer=False, tune=False, debug=
             guide_in_buffer = [guide_in_buffer]
         object_references = [
             ray_grl_training.remote(
-                get_config(env_name, horizon_fn, guide_in, debug), seed
+                get_config(env_name, horizon_fn, guide_in, debug, sample_perc), seed
             )
             for env_name in env_names
             for seed in range(seeds)
@@ -39,7 +53,9 @@ def train(env_name, horizon_fn, seeds, guide_in_buffer=False, tune=False, debug=
             data = ray.get(finished)
             all_data.extend(data)
     else:
-        run_grl_training(get_config(env_name, horizon_fn, guide_in_buffer, debug), 0)
+        run_grl_training(
+            get_config(env_name, horizon_fn, guide_in_buffer, debug, sample_perc), 0
+        )
 
 
 if __name__ == "__main__":
@@ -62,7 +78,7 @@ if __name__ == "__main__":
         "--guide_in_buffer",
         type=str,
         help="Whether to add guide transitions to the buffer",
-        default="0",
+        default="1",
         required=False,
     )
     argparse.add_argument(
@@ -81,6 +97,12 @@ if __name__ == "__main__":
     argparse.add_argument(
         "--debug", action="store_true", help="Run in debug (no Ray)", required=False
     )
+    argparse.add_argument(
+        "--sample_perc",
+        type=float,
+        help="Next curriculum stage sample percentage",
+        required=False,
+    )
     args = argparse.parse_args()
     if args.guide_in_buffer != "all":
         args.guide_in_buffer = bool(int(args.guide_in_buffer))
@@ -91,4 +113,5 @@ if __name__ == "__main__":
         args.guide_in_buffer,
         args.tune,
         args.debug,
+        args.sample_perc,
     )

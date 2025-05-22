@@ -114,6 +114,15 @@ def evaluate_imperfect_policy(
     n_envs = env.num_envs
     episode_rewards = []
     episode_lengths = []
+    episode_reward_map = dict(
+        zip(
+            range(env.unwrapped.envs[0].spec.max_episode_steps),
+            [
+                np.zeros(n_eval_episodes)
+                for _ in range(env.unwrapped.envs[0].spec.max_episode_steps)
+            ],
+        )
+    )
 
     episode_counts = np.zeros(n_envs, dtype="int")
     # Divides episodes among different sub environments in the vector as evenly as possible
@@ -157,6 +166,7 @@ def evaluate_imperfect_policy(
             actions = [env.action_space.sample()]
         new_observations, rewards, dones, infos = env.step(actions)
         current_rewards += rewards
+        episode_reward_map[current_lengths[0]][episode_counts[0]] += rewards[0]
         current_lengths += 1
         for i in range(n_envs):
             if episode_counts[i] < episode_count_targets[i]:
@@ -204,6 +214,8 @@ def evaluate_imperfect_policy(
         )
     if return_guide_vals:
         if return_episode_rewards:
+            if np.all(np.array(curric_vals) == None):
+                curric_vals = episode_reward_map
             return episode_rewards, episode_lengths, curric_vals
         guide_val = curriculum_fns["accumulator_fn"](curric_vals)
         return mean_reward, std_reward, guide_val
@@ -485,6 +497,9 @@ def run_grl_training(config, seed):
             config["grl_config"]["horizon_fn"] == "agent_type"
         ), "If n_curriculum_stages=0 (run guide only), the horizon function must be agent_type"
     config["seed"] = seed
+    import curriculum_action_choice_utils as cacu
+
+    cacu.SAMPLE_PERC = config["grl_config"]["sample_perc"]
     env = gym.make(env_name)
     eval_env = gym.make(env_name)
     if "train_freq" in config:
@@ -547,6 +562,7 @@ def run_grl_training(config, seed):
         # model_save_path=f"saved_models/{env_name}_{algo}_{config['seed']}",
         verbose=2,
     )
+
     curriculum_mgmt_cb = CurriculumMgmtCallback(
         guide_policy, np.mean(guide_return), guide_curric_vals, config["grl_config"]
     )

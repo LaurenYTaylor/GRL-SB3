@@ -2,6 +2,9 @@ import numpy as np
 import torch
 from goal_distance_fns import goal_dist_calc
 
+REWARD_VAR_MAP = {}
+SAMPLE_PERC = 0.5
+
 
 def variance_action_choice(config):
     """
@@ -35,6 +38,24 @@ def variance_action_choice(config):
     if var <= config["curriculum_stage"]:
         use_learner = True
     return use_learner, var
+
+
+def reward_var_action_choice(config):
+    if REWARD_VAR_MAP == {}:
+        return False, None
+    reward_var = REWARD_VAR_MAP[config["time_step"]]
+    if reward_var <= config["curriculum_stages"][config["curriculum_stage_idx"]]:
+        use_learner = True
+    elif (config["curriculum_stage_idx"] != len(config["curriculum_stages"] - 1)) and (
+        reward_var <= config["curriculum_stages"][config["curriculum_stage_idx"] + 1]
+    ):
+        if np.random.random() < SAMPLE_PERC:
+            use_learner = True
+        else:
+            use_learner = False
+    else:
+        use_learner = False
+    return use_learner, reward_var
 
 
 def exp_timestep_action_choice(config):
