@@ -46,7 +46,7 @@ def reward_var_action_choice(config):
     reward_var = REWARD_VAR_MAP[config["time_step"]]
     if reward_var <= config["curriculum_stages"][config["curriculum_stage_idx"]]:
         use_learner = True
-    elif (config["curriculum_stage_idx"] != len(config["curriculum_stages"] - 1)) and (
+    elif (config["curriculum_stage_idx"] != len(config["curriculum_stages"]) - 1) and (
         reward_var <= config["curriculum_stages"][config["curriculum_stage_idx"] + 1]
     ):
         if np.random.random() < SAMPLE_PERC:
