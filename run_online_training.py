@@ -19,7 +19,7 @@ def train(
         hyperparam_training(
             get_config(env_name, horizon_fn, guide_in_buffer, debug, sample_perc)
         )
-    elif not debug:
+    else:
         if env_name == "all":
             env_names = exp_config.env_names
         elif env_name == "adroit":
@@ -37,25 +37,33 @@ def train(
             guide_in_buffer = [True, False]
         else:
             guide_in_buffer = [guide_in_buffer]
-        object_references = [
-            ray_grl_training.remote(
-                get_config(env_name, horizon_fn, guide_in, debug, sample_perc), seed
-            )
-            for env_name in env_names
-            for seed in range(seeds)
-            for horizon_fn in horizon_fns
-            for guide_in in guide_in_buffer
-        ]
+        if not debug:
+            object_references = [
+                ray_grl_training.remote(
+                    get_config(env_name, horizon_fn, guide_in, debug, sample_perc), seed
+                )
+                for env_name in env_names
+                for seed in range(seeds)
+                for horizon_fn in horizon_fns
+                for guide_in in guide_in_buffer
+            ]
 
-        all_data = []
-        while len(object_references) > 0:
-            finished, object_references = ray.wait(object_references, timeout=7.0)
-            data = ray.get(finished)
-            all_data.extend(data)
-    else:
-        run_grl_training(
-            get_config(env_name, horizon_fn, guide_in_buffer, debug, sample_perc), 0
-        )
+            all_data = []
+            while len(object_references) > 0:
+                finished, object_references = ray.wait(object_references, timeout=7.0)
+                data = ray.get(finished)
+                all_data.extend(data)
+        else:
+            for env_name in env_names:
+                for seed in range(seeds):
+                    for horizon_fn in horizon_fns:
+                        for guide_in in guide_in_buffer:
+                            run_grl_training(
+                                get_config(
+                                    env_name, horizon_fn, guide_in, debug, sample_perc
+                                ),
+                                seed,
+                            )
 
 
 if __name__ == "__main__":

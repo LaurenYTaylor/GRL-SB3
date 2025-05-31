@@ -29,16 +29,16 @@ DEFAULT_CONFIG = {
     "eval_freq": 10000,
     "n_eval_episodes": 150,
     "pretrain_eval_episodes": 500,
-    "training_steps": 1000000,
+    "training_steps": 2000000,
     "grl_config": {
         "horizon_fn": "variance",
-        "n_curriculum_stages": 10,
+        "n_curriculum_stages": 20,
         "variance_fn": None,
         "rolling_mean_n": 1,
         "tolerance": 0.1,
-        "guide_randomness": 0.05,
+        "guide_randomness": 0.0,
         "exp_time_step_coeff": 0.001,
-        "sample_perc": 0.5,
+        "sample_perc": 0,
     },
     "algo_config": {
         "buffer_size": 500000,
@@ -59,6 +59,7 @@ def get_config(env_name, horizon_fn, guide_in, debug, sample_perc):
     config["pretrained_path"] = paths_dict[env_name]
     config["grl_config"]["guide_in_buffer"] = guide_in
     config["grl_config"]["horizon_fn"] = horizon_fn
-    config["grl_config"]["sample_perc"] = sample_perc
+    if sample_perc is not None:
+        config["grl_config"]["sample_perc"] = sample_perc
     config["debug"] = debug
     return config

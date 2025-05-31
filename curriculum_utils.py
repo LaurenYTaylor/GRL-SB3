@@ -68,11 +68,12 @@ def reward_var_curriculum(guide_vals, n_curriculum_stages):
             returns[:, i - 1] = per_episode[:, i - 1] + gamma * returns[:, i]
     # reward_diffs.append(0.0)
     # curric_dict = dict(zip(range(len(reward_diffs)), reward_diffs))
-    mean_returns = np.mean(returns, axis=0)
-    return_diff = mean_returns[1:] - mean_returns[:-1]
+    var_returns = np.var(returns, axis=0)
+    return_diff = np.abs(var_returns[1:] - var_returns[:-1])
 
     perc = np.percentile(
-        return_diff, np.linspace((100 / n_curriculum_stages), 100, n_curriculum_stages)
+        return_diff[return_diff != 0],
+        np.linspace((100 / n_curriculum_stages), 100, n_curriculum_stages),
     )
 
     perc_dict = {}
@@ -83,12 +84,10 @@ def reward_var_curriculum(guide_vals, n_curriculum_stages):
             idxs = np.where((return_diff <= p) & (return_diff > perc[i - 1]))[0]
         step_dict = dict(zip(list(idxs), [p] * len(idxs)))
         perc_dict.update(step_dict)
-    perc_dict[max(perc_dict.keys()) + 1] = mean_returns[-1]
+    perc_dict[max(perc_dict.keys()) + 1] = var_returns[-1]
     import curriculum_action_choice_utils
 
     curriculum_action_choice_utils.REWARD_VAR_MAP = perc_dict
-    print(perc_dict)
-    print(perc)
     return perc
 
 

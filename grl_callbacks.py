@@ -257,5 +257,9 @@ class CurriculumStageUpdateCallback(BaseCallback):
         self.parent.logger.record(
             "eval/curriculum_stage_idx", self.model.curriculum_stage_idx
         )
+        self.parent.logger.record(
+            "eval/curriculum_stage",
+            self.parent.model.curriculum_stages[self.model.curriculum_stage_idx],
+        )
         self.parent.logger.record("eval/best_eval_w_tolerance", prev_best)
         return True
