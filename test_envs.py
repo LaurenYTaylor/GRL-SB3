@@ -21,17 +21,17 @@ def exponential_smoothing(data, alpha):
 
 env_names = [
     # "AntMaze_UMaze-v2",
-    "AdroitHandPen-v1",
+    # "AdroitHandPen-v1",
     "AdroitHandHammer-v1",
-    "AdroitHandRelocate-v1",
-    "AdroitHandDoor-v1",
-    "Pusher-v5",
-    "InvertedDoublePendulum-v5",
-    "Hopper-v5",
+    # "AdroitHandRelocate-v1",
+    # "AdroitHandDoor-v1",
+    # "Pusher-v5",
+    # "InvertedDoublePendulum-v5",
+    # "Hopper-v5",
 ]
 training_steps = 1000000
-episodes = 300
-GUIDE_PERC = 0.9
+episodes = 500
+GUIDE_PERC = 0.95
 for e_i, env_name in enumerate(env_names):
     print(env_name)
     # if e_i!=1: continue
@@ -109,7 +109,7 @@ for e_i, env_name in enumerate(env_names):
         ax[1].set_ylabel("Mean Returns")
         plt.title(env_name)
         plt.tight_layout()
-        plt.savefig(f"plots/var_return_diff_{env_name}_{GUIDE_PERC}.png")
+        plt.savefig(f"plots/var_return_diff_{env_name}_{GUIDE_PERC}_500eps.png")
         # plt.show()
         plt.close()
 
@@ -128,6 +128,6 @@ for e_i, env_name in enumerate(env_names):
             plt.scatter(perc_dict[k], [k] * len(perc_dict[k]), label=f"CS-{c_stage}")
             c_stage += 1
         plt.legend()
-        plt.savefig(f"plots/perc_scatter_{env_name}_diff_{GUIDE_PERC}.png")
+        plt.savefig(f"plots/perc_scatter_{env_name}_diff_{GUIDE_PERC}_500eps.png")
         print(perc_dict.keys())
         plt.close()

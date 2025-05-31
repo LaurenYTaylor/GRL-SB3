@@ -525,14 +525,25 @@ def run_grl_training(config, seed):
         vf.training = False
         config["grl_config"]["variance_fn"] = vf
         guide_policy.variance_fn = vf
-    guide_return, guide_std, guide_curric_vals = evaluate_imperfect_policy(
+    _, _, guide_curric_vals = evaluate_imperfect_policy(
         guide_policy,
         eval_env,
         return_guide_vals=True,
         return_episode_rewards=True,
         n_eval_episodes=config["pretrain_eval_episodes"],
-        # randomness=config["grl_config"]["guide_randomness"],
-        randomness=1 - (1 / config["grl_config"]["n_curriculum_stages"]),
+        randomness=(
+            config["grl_config"]["guide_randomness"]
+            + (1 / config["grl_config"]["n_curriculum_stages"])
+        ),
+        curriculum_fns=CURRICULUM_FNS[config["grl_config"]["horizon_fn"]],
+    )
+    guide_return, guide_var, _ = evaluate_imperfect_policy(
+        guide_policy,
+        eval_env,
+        return_guide_vals=True,
+        return_episode_rewards=True,
+        n_eval_episodes=config["pretrain_eval_episodes"],
+        randomness=config["grl_config"]["guide_randomness"],
         curriculum_fns=CURRICULUM_FNS[config["grl_config"]["horizon_fn"]],
     )
     # print(f"Guide return: {np.mean(guide_return)}+\-{np.mean(guide_std)}")
@@ -546,8 +557,7 @@ def run_grl_training(config, seed):
         SAC.collect_rollouts = collect_rollouts_patch
 
     # Set up the model callbacks
-    # if config["debug"]:
-    if True:
+    if config["debug"]:
         project = "sb3-sac-curricula_debug"
     else:
         project = "sb3-sac-curricula_all_envs"

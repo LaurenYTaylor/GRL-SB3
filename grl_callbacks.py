@@ -166,6 +166,7 @@ class CurriculumMgmtCallback(BaseCallback):
     def _on_training_start(self) -> None:
         self.model.guide_policy = self.guide_policy
         self.model.guide_return = self.guide_return
+        self.logger.record("eval/mean_reward", self.guide_return)
         self.model.guide_randomness = self.curriculum_config["guide_randomness"]
         self.model.rolling_mean_n = self.curriculum_config["rolling_mean_n"]
         self.model.tolerance = self.curriculum_config["tolerance"]

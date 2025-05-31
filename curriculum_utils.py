@@ -75,7 +75,6 @@ def reward_var_curriculum(guide_vals, n_curriculum_stages):
         return_diff[return_diff != 0],
         np.linspace((100 / n_curriculum_stages), 100, n_curriculum_stages),
     )
-
     perc_dict = {}
     for i, p in enumerate(perc):
         if i == 0:
