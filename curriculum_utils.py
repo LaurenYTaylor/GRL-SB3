@@ -1,10 +1,8 @@
 import numpy as np
 from curriculum_action_choice_utils import (
     agent_type_action_choice,
-    goal_distance_action_choice,
     timestep_action_choice,
     exp_timestep_action_choice,
-    variance_action_choice,
     reward_var_action_choice,
 )
 
@@ -70,28 +68,38 @@ def reward_var_curriculum(guide_vals, n_curriculum_stages):
     # curric_dict = dict(zip(range(len(reward_diffs)), reward_diffs))
     var_returns = np.var(returns, axis=0)
     return_diff = np.abs(var_returns[1:] - var_returns[:-1])
-
+    return_diff = np.concatenate((return_diff, [var_returns[-1]]))
     perc = np.percentile(
         return_diff[return_diff != 0],
         np.linspace((100 / n_curriculum_stages), 100, n_curriculum_stages),
     )
     perc_dict = {}
+    curric_dict = {}
     for i, p in enumerate(perc):
         if i == 0:
             idxs = np.where(return_diff <= p)[0]
         else:
-            idxs = np.where((return_diff <= p) & (return_diff > perc[i - 1]))[0]
-        step_dict = dict(zip(list(idxs), [p] * len(idxs)))
-        perc_dict.update(step_dict)
-    perc_dict[max(perc_dict.keys()) + 1] = var_returns[-1]
+            idxs = np.where((return_diff <= p) & (return_diff >= perc[i - 1]))[0]
+        if len(idxs) > len(returns) / n_curriculum_stages:
+            idxs = sorted(idxs, reverse=True)
+            idxs = idxs[: int(len(returns) / n_curriculum_stages)]
+            return_diff[idxs] = np.inf  # Prevents idxs from being used again
+        curric_dict[i] = idxs
+        perc_dict[i] = p
     import curriculum_action_choice_utils
 
     curriculum_action_choice_utils.REWARD_VAR_MAP = perc_dict
+    curriculum_action_choice_utils.REWARD_VAR_CURRIC_MAP = curric_dict
     return perc
 
 
 CURRICULUM_FNS = {
-    "reward_var": {
+    "var_diff_adaptive": {
+        "action_choice_fn": reward_var_action_choice,
+        "accumulator_fn": None,
+        "generate_curriculum_fn": reward_var_curriculum,
+    },
+    "var_n_adaptive": {
         "action_choice_fn": reward_var_action_choice,
         "accumulator_fn": None,
         "generate_curriculum_fn": reward_var_curriculum,
@@ -110,15 +118,5 @@ CURRICULUM_FNS = {
         "action_choice_fn": agent_type_action_choice,
         "accumulator_fn": static_accumulator,
         "generate_curriculum_fn": agent_type_curriculum,
-    },
-    "goal_dist": {
-        "action_choice_fn": goal_distance_action_choice,
-        "accumulator_fn": max_accumulator,
-        "generate_curriculum_fn": min_to_max_curriculum,
-    },
-    "variance": {
-        "action_choice_fn": variance_action_choice,
-        "accumulator_fn": mean_accumulator,
-        "generate_curriculum_fn": min_to_max_curriculum,
     },
 }

@@ -8,6 +8,90 @@ from stable_baselines3.common.callbacks import BaseCallback, EvalCallback
 from stable_baselines3.common.vec_env import VecEnv, sync_envs_normalization
 import numpy as np
 import grl_utils
+import matplotlib.pyplot as plt
+
+
+class CurriculumMgmtCallback(BaseCallback):
+    """
+    Custom callback that sets the initial curriculum stage index and rolling mean.
+    """
+
+    def __init__(
+        self,
+        guide_policy,
+        guide_return,
+        guide_curriculum_val,
+        curriculum_config,
+        verbose=0,
+    ):
+        super().__init__(verbose)
+        self.guide_policy = guide_policy
+        self.guide_return = guide_return
+        self.guide_curriculum_val = guide_curriculum_val
+        self.curriculum_config = curriculum_config
+
+    def _on_training_start(self) -> None:
+        self.model.guide_policy = self.guide_policy
+        self.model.guide_return = self.guide_return
+        self.logger.record("eval/mean_reward", self.guide_return)
+        self.model.guide_randomness = self.curriculum_config["guide_randomness"]
+        self.model.rolling_mean_n = self.curriculum_config["rolling_mean_n"]
+        self.model.tolerance = self.curriculum_config["tolerance"]
+        self.model.guide_curriculum_val = self.guide_curriculum_val
+        self.model.guide_in_buffer = self.curriculum_config["guide_in_buffer"]
+        self.model.horizon_fn = self.curriculum_config["horizon_fn"]
+        self.model.learner_or_guide_action = CURRICULUM_FNS[
+            self.curriculum_config["horizon_fn"]
+        ]["action_choice_fn"]
+        if self.curriculum_config["horizon_fn"] == "exp_time_step":
+            self.model.exp_time_step_coeff = self.curriculum_config[
+                "exp_time_step_coeff"
+            ]
+        else:
+            self.model.exp_time_step_coeff = None
+        if self.curriculum_config["n_curriculum_stages"] > 0:
+            self.model.curriculum_stages = CURRICULUM_FNS[
+                self.curriculum_config["horizon_fn"]
+            ]["generate_curriculum_fn"](
+                self.guide_curriculum_val, self.curriculum_config["n_curriculum_stages"]
+            )
+            plt.scatter(
+                range(len(self.model.curriculum_stages)),
+                self.model.curriculum_stages,
+                label=f"TS={self.model.num_timesteps}",
+            )
+            plt.xlabel("Curriculum Stage Index")
+            plt.ylabel("Curriculum Stage Value")
+            env_name = self.training_env.envs[0].spec.id
+            plt.title(env_name + " Curriculum Stages")
+            plt.legend()
+            plt.tight_layout()
+            plt.savefig(f"model_curricula_plots/curriculum_stages_{env_name}.png")
+        else:
+            self.model.curriculum_stages = []
+        self.model.variance_fn = self.curriculum_config["variance_fn"]
+        self.model.curriculum_val_t = 0.0
+        self.model.curriculum_stage_idx = 0
+        self.model.ep_curriculum_values = [self.model.curriculum_val_t]
+        self.model.ep_timestep = 0
+
+    def _on_step(self) -> bool:
+        done = self.locals["dones"][-1]
+        if done:
+            self.logger.record(
+                "train/ep_curriculum_val", np.mean(self.model.ep_curriculum_values)
+            )
+            self.model.ep_timestep = 0
+            self.model.ep_curriculum_values = [self.model.curriculum_val_t]
+        elif self.model.ep_timestep == 0:
+            # replace dummy 0 with actual
+            self.model.ep_timestep += 1
+            self.model.ep_curriculum_values = [self.model.curriculum_val_t]
+        else:
+            self.model.ep_timestep += 1
+            self.model.ep_curriculum_values.append(self.model.curriculum_val_t)
+        self.locals["infos"][-1]["last_use_learner"] = self.model.last_use_learner
+        return True
 
 
 class ModifiedEvalCallback(EvalCallback):
@@ -38,6 +122,7 @@ class ModifiedEvalCallback(EvalCallback):
             verbose,
             warn,
         )
+        self.episode_reward_map = {}
 
     def _on_step(self) -> bool:
         if not hasattr(self, "rolling_n_returns"):
@@ -58,17 +143,21 @@ class ModifiedEvalCallback(EvalCallback):
 
             # Reset success rate buffer
             self._is_success_buffer = []
-            episode_rewards, episode_lengths, learner_usage, episode_successes = (
-                grl_utils.evaluate_policy_patch(
-                    self.model,
-                    self.eval_env,
-                    n_eval_episodes=self.n_eval_episodes,
-                    render=self.render,
-                    deterministic=self.deterministic,
-                    return_episode_rewards=True,
-                    warn=self.warn,
-                    callback=self._log_success_callback,
-                )
+            (
+                episode_rewards,
+                episode_lengths,
+                learner_usage,
+                self.episode_reward_map,
+                episode_successes,
+            ) = grl_utils.evaluate_policy_patch(
+                self.model,
+                self.eval_env,
+                n_eval_episodes=self.n_eval_episodes,
+                render=self.render,
+                deterministic=self.deterministic,
+                return_episode_rewards=True,
+                warn=self.warn,
+                callback=self._log_success_callback,
             )
 
             if self.log_path is not None:
@@ -144,77 +233,6 @@ class ModifiedEvalCallback(EvalCallback):
         return continue_training
 
 
-class CurriculumMgmtCallback(BaseCallback):
-    """
-    Custom callback that sets the initial curriculum stage index and rolling mean.
-    """
-
-    def __init__(
-        self,
-        guide_policy,
-        guide_return,
-        guide_curriculum_val,
-        curriculum_config,
-        verbose=0,
-    ):
-        super().__init__(verbose)
-        self.guide_policy = guide_policy
-        self.guide_return = guide_return
-        self.guide_curriculum_val = guide_curriculum_val
-        self.curriculum_config = curriculum_config
-
-    def _on_training_start(self) -> None:
-        self.model.guide_policy = self.guide_policy
-        self.model.guide_return = self.guide_return
-        self.logger.record("eval/mean_reward", self.guide_return)
-        self.model.guide_randomness = self.curriculum_config["guide_randomness"]
-        self.model.rolling_mean_n = self.curriculum_config["rolling_mean_n"]
-        self.model.tolerance = self.curriculum_config["tolerance"]
-        self.model.guide_curriculum_val = self.guide_curriculum_val
-        self.model.guide_in_buffer = self.curriculum_config["guide_in_buffer"]
-        self.model.horizon_fn = self.curriculum_config["horizon_fn"]
-        self.model.learner_or_guide_action = CURRICULUM_FNS[
-            self.curriculum_config["horizon_fn"]
-        ]["action_choice_fn"]
-        if self.curriculum_config["horizon_fn"] == "exp_time_step":
-            self.model.exp_time_step_coeff = self.curriculum_config[
-                "exp_time_step_coeff"
-            ]
-        else:
-            self.model.exp_time_step_coeff = None
-        if self.curriculum_config["n_curriculum_stages"] > 0:
-            self.model.curriculum_stages = CURRICULUM_FNS[
-                self.curriculum_config["horizon_fn"]
-            ]["generate_curriculum_fn"](
-                self.guide_curriculum_val, self.curriculum_config["n_curriculum_stages"]
-            )
-        else:
-            self.model.curriculum_stages = []
-        self.model.variance_fn = self.curriculum_config["variance_fn"]
-        self.model.curriculum_val_t = 0.0
-        self.model.curriculum_stage_idx = 0
-        self.model.ep_curriculum_values = [self.model.curriculum_val_t]
-        self.model.ep_timestep = 0
-
-    def _on_step(self) -> bool:
-        done = self.locals["dones"][-1]
-        if done:
-            self.logger.record(
-                "train/ep_curriculum_val", np.mean(self.model.ep_curriculum_values)
-            )
-            self.model.ep_timestep = 0
-            self.model.ep_curriculum_values = [self.model.curriculum_val_t]
-        elif self.model.ep_timestep == 0:
-            # replace dummy 0 with actual
-            self.model.ep_timestep += 1
-            self.model.ep_curriculum_values = [self.model.curriculum_val_t]
-        else:
-            self.model.ep_timestep += 1
-            self.model.ep_curriculum_values.append(self.model.curriculum_val_t)
-        self.locals["infos"][-1]["last_use_learner"] = self.model.last_use_learner
-        return True
-
-
 class CurriculumStageUpdateCallback(BaseCallback):
     """
     Custom callback that decides whether to use the guide or learner agent at each time step.
@@ -222,8 +240,11 @@ class CurriculumStageUpdateCallback(BaseCallback):
 
     parent: EvalCallback
 
-    def __init__(self, verbose=0):
+    def __init__(self, horizon_fn, verbose=0):
         super().__init__(verbose)
+        self.generate_new_curriculum_fn = CURRICULUM_FNS[horizon_fn][
+            "generate_curriculum_fn"
+        ]
 
     def _on_step(self) -> bool:
         if not hasattr(self, "best_eval_return"):
@@ -240,6 +261,26 @@ class CurriculumStageUpdateCallback(BaseCallback):
                 len(self.parent.model.curriculum_stages) - 1
             ):
                 self.parent.model.curriculum_stage_idx += 1
+                self.parent.model.curriculum_stages = self.generate_new_curriculum_fn(
+                    self.parent.episode_reward_map,
+                    len(self.parent.model.curriculum_stages),
+                )
+                plt.scatter(
+                    range(
+                        self.parent.model.curriculum_stage_idx,
+                        len(self.parent.model.curriculum_stages),
+                    ),
+                    self.parent.model.curriculum_stages[
+                        self.parent.model.curriculum_stage_idx :
+                    ],
+                    label=f"TS={self.parent.num_timesteps}",
+                )
+                plt.xlabel("Curriculum Stage Index")
+                plt.ylabel("Curriculum Stage Value")
+                env_name = self.parent.training_env.envs[0].spec.id
+                plt.title(env_name + " Curriculum Stages")
+                plt.legend()
+                plt.savefig(f"model_curricula_plots/curriculum_stages_{env_name}.png")
                 if self.parent.rolling_n_returns[-1] > self.best_eval_return:
                     self.best_eval_return = self.parent.rolling_n_returns[-1]
             self.parent.logger.record(

@@ -29,8 +29,7 @@ def train(
         else:
             env_names = [env_name]
         if horizon_fn == "all":
-            # horizon_fns = ["agent_type", "time_step", "goal_dist", "variance"]
-            horizon_fns = ["reward_var", "time_step"]
+            horizon_fns = ["var_nn_adaptive", "var_diff_adaptive", "time_step"]
         else:
             horizon_fns = [horizon_fn]
         if guide_in_buffer == "all":

@@ -21,17 +21,18 @@ def exponential_smoothing(data, alpha):
 
 env_names = [
     # "AntMaze_UMaze-v2",
-    # "AdroitHandPen-v1",
+    "AdroitHandPen-v1",
     "AdroitHandHammer-v1",
-    # "AdroitHandRelocate-v1",
-    # "AdroitHandDoor-v1",
-    # "Pusher-v5",
-    # "InvertedDoublePendulum-v5",
-    # "Hopper-v5",
+    "AdroitHandRelocate-v1",
+    "AdroitHandDoor-v1",
+    "Pusher-v5",
+    "InvertedDoublePendulum-v5",
+    "Hopper-v5",
 ]
 training_steps = 1000000
 episodes = 500
 GUIDE_PERC = 0.95
+n_curriculum_stages = 20
 for e_i, env_name in enumerate(env_names):
     print(env_name)
     # if e_i!=1: continue
@@ -53,14 +54,14 @@ for e_i, env_name in enumerate(env_names):
     )
     for episode in range(episodes):
         done = False
-        obs, infos = env.reset()
+        obs, infos = env.reset(seed=0)
         steps = 0
         total_reward = 0
         success_flag = False
         while not done:
             action = env.action_space.sample()
             if np.random.random() < GUIDE_PERC:
-                action = guide_policy.predict(obs)[0]
+                action = guide_policy.predict(obs, deterministic=True)[0]
             obs, reward, term, trunc, info = env.step(action)
             total_reward += reward
             step_rewards[steps][episode] = reward
@@ -89,8 +90,7 @@ for e_i, env_name in enumerate(env_names):
         # reward_diffs = np.std(rewards_matrix, axis=1)
         # reward_diffs = np.abs(reward_diffs[1:]-reward_diffs[:-1])
         # norm_diffs = 1-reward_diffs/max(reward_diffs)
-        # ax[0].scatter(range(len(reward_diffs)), reward_diffs, linestyle="--")
-
+        # ax[0].scatter(range(len(reward_diffs)), reward_diffs, linestyle="--
         std_returns = np.var(returns, axis=0)
         mean_returns = np.mean(returns, axis=0)
         ax[1].scatter(range(len(returns[0])), mean_returns, label="Mean Returns")
@@ -99,6 +99,7 @@ for e_i, env_name in enumerate(env_names):
         )
 
         return_diff = np.abs(std_returns[1:] - std_returns[:-1])
+        # return_diff = exponential_smoothing(return_diff, 0.9)
         ax[0].scatter(range(len(return_diff)), return_diff, label="Return Diff")
         plt.legend()
 
@@ -109,25 +110,40 @@ for e_i, env_name in enumerate(env_names):
         ax[1].set_ylabel("Mean Returns")
         plt.title(env_name)
         plt.tight_layout()
-        plt.savefig(f"plots/var_return_diff_{env_name}_{GUIDE_PERC}_500eps.png")
-        # plt.show()
+        plt.savefig(f"plots/var_return_diff_{env_name}_{GUIDE_PERC}_500eps_revsort.png")
         plt.close()
 
-        perc = np.percentile(return_diff[return_diff != 0], range(10, 110, 10))
-
+        return_diff = np.round(return_diff)
+        perc = np.percentile(
+            return_diff,
+            np.linspace((100 / n_curriculum_stages), 100, n_curriculum_stages),
+        )
+        curric_dict = {}
         perc_dict = {}
+        real_indices = np.array(range(len(return_diff)))
         for i, p in enumerate(perc):
             if i == 0:
                 idxs = np.where(return_diff <= p)[0]
             else:
-                idxs = np.where((return_diff <= p) & (return_diff > perc[i - 1]))[0]
-            perc_dict[p] = idxs
-
+                idxs = np.where((return_diff <= p) & (return_diff >= perc[i - 1]))[0]
+            if len(idxs) > env.spec.max_episode_steps / n_curriculum_stages:
+                idxs = sorted(idxs, reverse=True)
+                idxs = idxs[: int(env.spec.max_episode_steps / n_curriculum_stages)]
+                return_diff[idxs] = np.inf  # Prevents idxs from being used again
+            curric_dict[i] = idxs
+            perc_dict[i] = p
+        print(curric_dict)
         c_stage = 0
         for k in sorted(perc_dict):
-            plt.scatter(perc_dict[k], [k] * len(perc_dict[k]), label=f"CS-{c_stage}")
+            plt.scatter(
+                curric_dict[k],
+                [perc_dict[k]] * len(curric_dict[k]),
+                label=f"CS-{c_stage}",
+            )
             c_stage += 1
         plt.legend()
-        plt.savefig(f"plots/perc_scatter_{env_name}_diff_{GUIDE_PERC}_500eps.png")
+        plt.savefig(
+            f"plots/perc_scatter_{env_name}_diff_{GUIDE_PERC}_500eps_revsort.png"
+        )
         print(perc_dict.keys())
         plt.close()

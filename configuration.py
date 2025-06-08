@@ -56,7 +56,7 @@ def get_config(env_name, horizon_fn, guide_in, debug, sample_perc):
     config = copy.deepcopy(DEFAULT_CONFIG)
     config["algo"] = algorithm_dict.get(env_name, "SAC")
     config["env_name"] = env_name
-    config["pretrained_path"] = paths_dict[env_name]
+    config["pretrained_path"] = paths_dict.get(env_name, "")
     config["grl_config"]["guide_in_buffer"] = guide_in
     config["grl_config"]["horizon_fn"] = horizon_fn
     if sample_perc is not None:

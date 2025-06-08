@@ -1,6 +1,5 @@
 from typing import Optional, Union, Callable, Any
 
-import os
 import ray
 import torch
 import wandb
@@ -32,10 +31,19 @@ from grl_callbacks import (
 from variance_trainer import StateDepFunction, VarianceLearner
 from curriculum_utils import CURRICULUM_FNS
 from experimental_utils import (
-    train_patch,
-    _store_transition_patch,
     collect_rollouts_patch,
 )
+from SACPolicy import SACPolicyPatch
+
+from typing import Any, Optional, Union
+
+import numpy as np
+import torch as th
+from gymnasium import spaces
+from torch.nn import functional as F
+from stable_baselines3.common.noise import ActionNoise
+from stable_baselines3.common.utils import polyak_update
+from stable_baselines3.sac.policies import SACPolicy
 
 MODELS = {"SAC": SAC, "PPO": PPO}
 
@@ -138,17 +146,12 @@ def evaluate_imperfect_policy(
     ep_curric_vals = [0]  # initialise with dummy zero to avoid numpy empty mean warning
     curric_vals = []
     while (episode_counts < episode_count_targets).any():
-        try:
-            variance_fn = model.variance_fn
-        except AttributeError:
-            variance_fn = None
         curric_config = {
             "curriculum_stages": [],
             "time_step": current_lengths[-1],
             "curriculum_val_ep": ep_curric_vals,
             "env": env,
             "obs": observations,
-            "variance_fn": variance_fn,
         }
         _, curric_val = curriculum_fns["action_choice_fn"](curric_config)
         actions, states = model.predict(
@@ -302,7 +305,15 @@ def evaluate_policy_patch(
     episode_count_targets = np.array(
         [(n_eval_episodes + i) // n_envs for i in range(n_envs)], dtype="int"
     )
-
+    episode_reward_map = dict(
+        zip(
+            range(env.unwrapped.envs[0].spec.max_episode_steps),
+            [
+                np.zeros(n_eval_episodes)
+                for _ in range(env.unwrapped.envs[0].spec.max_episode_steps)
+            ],
+        )
+    )
     current_rewards = np.zeros(n_envs)
     current_lengths = np.zeros(n_envs, dtype="int")
     ep_curriculum_values = [0]
@@ -349,6 +360,7 @@ def evaluate_policy_patch(
                 actions = [env.action_space.sample()]
         new_observations, rewards, dones, infos = env.step(actions)
         current_rewards += rewards
+        episode_reward_map[current_lengths[0]][episode_counts[0]] += rewards[0]
         current_lengths += 1
         for i in range(n_envs):
             if episode_counts[i] < episode_count_targets[i]:
@@ -401,8 +413,138 @@ def evaluate_policy_patch(
             f"{mean_reward:.2f} < {reward_threshold:.2f}"
         )
     if return_episode_rewards:
-        return episode_rewards, episode_lengths, learner_usage_values, episode_successes
-    return mean_reward, std_reward, mean_learner_usage, episode_successes
+        return (
+            episode_rewards,
+            episode_lengths,
+            learner_usage_values,
+            episode_reward_map,
+            episode_successes,
+        )
+    return (
+        mean_reward,
+        std_reward,
+        mean_learner_usage,
+        episode_reward_map,
+        episode_successes,
+    )
+
+
+def train_patch(self, gradient_steps: int, batch_size: int = 64) -> None:
+    # Switch to train mode (this affects batch norm / dropout)
+    self.policy.set_training_mode(True)
+    # Update optimizers learning rate
+    optimizers = [
+        self.actor.optimizer,
+        self.critic.optimizer,
+        self.action_selector.optimizer,
+    ]
+    if self.ent_coef_optimizer is not None:
+        optimizers += [self.ent_coef_optimizer]
+
+    # Update learning rate according to lr schedule
+    self._update_learning_rate(optimizers)
+
+    ent_coef_losses, ent_coefs = [], []
+    actor_losses, critic_losses, action_selector_losses = [], [], []
+
+    for gradient_step in range(gradient_steps):
+        # Sample replay buffer
+        replay_data = self.replay_buffer.sample(batch_size, env=self._vec_normalize_env)  # type: ignore[union-attr]
+
+        # We need to sample because `log_std` may have changed between two gradient steps
+        if self.use_sde:
+            self.actor.reset_noise()
+
+        # Action by the current actor for the sampled state
+        actions_pi, log_prob = self.actor.action_log_prob(replay_data.observations)
+        log_prob = log_prob.reshape(-1, 1)
+
+        ent_coef_loss = None
+        if self.ent_coef_optimizer is not None and self.log_ent_coef is not None:
+            # Important: detach the variable from the graph
+            # so we don't change it with other losses
+            # see https://github.com/rail-berkeley/softlearning/issues/60
+            ent_coef = th.exp(self.log_ent_coef.detach())
+            assert isinstance(self.target_entropy, float)
+            ent_coef_loss = -(
+                self.log_ent_coef * (log_prob + self.target_entropy).detach()
+            ).mean()
+            ent_coef_losses.append(ent_coef_loss.item())
+        else:
+            ent_coef = self.ent_coef_tensor
+
+        ent_coefs.append(ent_coef.item())
+
+        # Optimize entropy coefficient, also called
+        # entropy temperature or alpha in the paper
+        if ent_coef_loss is not None and self.ent_coef_optimizer is not None:
+            self.ent_coef_optimizer.zero_grad()
+            ent_coef_loss.backward()
+            self.ent_coef_optimizer.step()
+
+        with th.no_grad():
+            # Select action according to policy
+            next_actions, next_log_prob = self.actor.action_log_prob(
+                replay_data.next_observations
+            )
+            # Compute the next Q values: min over all critics targets
+            next_q_values = th.cat(
+                self.critic_target(replay_data.next_observations, next_actions), dim=1
+            )
+            next_q_values, _ = th.min(next_q_values, dim=1, keepdim=True)
+            # add entropy term
+            next_q_values = next_q_values - ent_coef * next_log_prob.reshape(-1, 1)
+            # td error + entropy term
+            target_q_values = (
+                replay_data.rewards
+                + (1 - replay_data.dones) * self.gamma * next_q_values
+            )
+
+        # Get current Q-values estimates for each critic network
+        # using action from the replay buffer
+        current_q_values = self.critic(replay_data.observations, replay_data.actions)
+
+        # Compute critic loss
+        critic_loss = 0.5 * sum(
+            F.mse_loss(current_q, target_q_values) for current_q in current_q_values
+        )
+        assert isinstance(critic_loss, th.Tensor)  # for type checker
+        critic_losses.append(critic_loss.item())  # type: ignore[union-attr]
+
+        # Optimize the critic
+        self.critic.optimizer.zero_grad()
+        critic_loss.backward()
+        self.critic.optimizer.step()
+
+        # Compute actor loss
+        # Alternative: actor_loss = th.mean(log_prob - qf1_pi)
+        # Min over all critic networks
+        q_values_pi = th.cat(self.critic(replay_data.observations, actions_pi), dim=1)
+        min_qf_pi, _ = th.min(q_values_pi, dim=1, keepdim=True)
+        actor_loss = (ent_coef * log_prob - min_qf_pi).mean()
+        actor_losses.append(actor_loss.item())
+
+        # Optimize the actor
+        self.actor.optimizer.zero_grad()
+        actor_loss.backward()
+        self.actor.optimizer.step()
+
+        # Update target networks
+        if gradient_step % self.target_update_interval == 0:
+            polyak_update(
+                self.critic.parameters(), self.critic_target.parameters(), self.tau
+            )
+            # Copy running stats, see GH issue #996
+            polyak_update(self.batch_norm_stats, self.batch_norm_stats_target, 1.0)
+
+    self._n_updates += gradient_steps
+
+    self.logger.record("train/n_updates", self._n_updates, exclude="tensorboard")
+    self.logger.record("train/ent_coef", np.mean(ent_coefs))
+    self.logger.record("train/actor_loss", np.mean(actor_losses))
+    self.logger.record("train/critic_loss", np.mean(critic_losses))
+    if len(ent_coef_losses) > 0:
+        self.logger.record("train/ent_coef_loss", np.mean(ent_coef_losses))
 
 
 def _sample_action_patch(
@@ -454,9 +596,12 @@ def _sample_action_patch(
             use_learner, self.curriculum_val_t = self.learner_or_guide_action(
                 choice_config
             )
+    use_guide = True
     if use_learner:
         unscaled_action, _ = self.predict(self._last_obs, deterministic=False)
-    else:
+        if torch.isinf(unscaled_action).any():
+            use_guide = True
+    if use_guide:
         if np.random.random() < self.guide_randomness:
             unscaled_action = np.array(
                 [self.action_space.sample() for _ in range(n_envs)]
@@ -500,31 +645,13 @@ def run_grl_training(config, seed):
     import curriculum_action_choice_utils as cacu
 
     cacu.SAMPLE_PERC = config["grl_config"]["sample_perc"]
+
     env = gym.make(env_name)
     eval_env = gym.make(env_name)
     if "train_freq" in config:
         config["gradient_steps"] = config["train_freq"]
     # Evaluate the guide policy
     guide_policy = MODELS[algo].load(pretrained_path)
-
-    if config["grl_config"]["horizon_fn"] == "variance":
-        n_updates = 10000
-        var_path = (
-            os.getcwd() + f"/variance_fns/var_functions/{env_name}_{n_updates}_vf.pt"
-        )
-        obs_dim = env.observation_space.shape[0]
-        action_dim = env.action_space.shape[0]
-        vf = StateDepFunction(obs_dim)
-        try:
-            vf.load_state_dict(torch.load(var_path))
-            variance_learner = VarianceLearner(obs_dim, action_dim, None, None)
-            variance_learner.vf = vf
-        except FileNotFoundError:
-            variance_learner = VarianceLearner(obs_dim, action_dim, 0.05, guide_policy)
-            vf = variance_learner.run_training(env, n_updates=n_updates, evaluate=True)
-        vf.training = False
-        config["grl_config"]["variance_fn"] = vf
-        guide_policy.variance_fn = vf
     _, _, guide_curric_vals = evaluate_imperfect_policy(
         guide_policy,
         eval_env,
@@ -543,18 +670,21 @@ def run_grl_training(config, seed):
         return_guide_vals=True,
         return_episode_rewards=True,
         n_eval_episodes=config["pretrain_eval_episodes"],
-        randomness=config["grl_config"]["guide_randomness"],
+        randomness=(
+            config["grl_config"]["guide_randomness"]
+            + (1 / config["grl_config"]["n_curriculum_stages"])
+        ),
         curriculum_fns=CURRICULUM_FNS[config["grl_config"]["horizon_fn"]],
     )
     # print(f"Guide return: {np.mean(guide_return)}+\-{np.mean(guide_std)}")
 
     # Patch the algo with modified functions
     SAC._sample_action = _sample_action_patch
-    # SAC.train = train_patch
+    if config["grl_config"]["horizon_fn"] == "var_nn_adaptive":
+        SAC.train = train_patch
+        SAC.SACPolicy = SACPolicyPatch
     sb3_eval.evaluate_policy = evaluate_policy_patch
     # SAC._store_transition = _store_transition_patch
-    if not config["grl_config"]["guide_in_buffer"]:
-        SAC.collect_rollouts = collect_rollouts_patch
 
     # Set up the model callbacks
     if config["debug"]:
@@ -578,7 +708,9 @@ def run_grl_training(config, seed):
     curriculum_mgmt_cb = CurriculumMgmtCallback(
         guide_policy, np.mean(guide_return), guide_curric_vals, config["grl_config"]
     )
-    curriculum_update_cb = CurriculumStageUpdateCallback()
+    curriculum_update_cb = CurriculumStageUpdateCallback(
+        config["grl_config"]["horizon_fn"]
+    )
     eval_cb = ModifiedEvalCallback(
         eval_env,
         best_model_save_path=f"./saved_models/{env_name}_{algo}_{config['seed']}",
