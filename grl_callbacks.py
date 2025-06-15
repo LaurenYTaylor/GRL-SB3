@@ -151,6 +151,7 @@ class ModifiedEvalCallback(EvalCallback):
                 episode_successes,
             ) = grl_utils.evaluate_policy_patch(
                 self.model,
+                self.model.action_selector,
                 self.eval_env,
                 n_eval_episodes=self.n_eval_episodes,
                 render=self.render,
@@ -261,26 +262,26 @@ class CurriculumStageUpdateCallback(BaseCallback):
                 len(self.parent.model.curriculum_stages) - 1
             ):
                 self.parent.model.curriculum_stage_idx += 1
-                self.parent.model.curriculum_stages = self.generate_new_curriculum_fn(
-                    self.parent.episode_reward_map,
-                    len(self.parent.model.curriculum_stages),
-                )
-                plt.scatter(
-                    range(
-                        self.parent.model.curriculum_stage_idx,
-                        len(self.parent.model.curriculum_stages),
-                    ),
-                    self.parent.model.curriculum_stages[
-                        self.parent.model.curriculum_stage_idx :
-                    ],
-                    label=f"TS={self.parent.num_timesteps}",
-                )
-                plt.xlabel("Curriculum Stage Index")
-                plt.ylabel("Curriculum Stage Value")
-                env_name = self.parent.training_env.envs[0].spec.id
-                plt.title(env_name + " Curriculum Stages")
-                plt.legend()
-                plt.savefig(f"model_curricula_plots/curriculum_stages_{env_name}.png")
+                # self.parent.model.curriculum_stages = self.generate_new_curriculum_fn(
+                #     self.parent.episode_reward_map,
+                #     len(self.parent.model.curriculum_stages),
+                # )
+                # plt.scatter(
+                #     range(
+                #         self.parent.model.curriculum_stage_idx,
+                #         len(self.parent.model.curriculum_stages),
+                #     ),
+                #     self.parent.model.curriculum_stages[
+                #         self.parent.model.curriculum_stage_idx :
+                #     ],
+                #     label=f"TS={self.parent.num_timesteps}",
+                # )
+                # plt.xlabel("Curriculum Stage Index")
+                # plt.ylabel("Curriculum Stage Value")
+                # env_name = self.parent.training_env.envs[0].spec.id
+                # plt.title(env_name + " Curriculum Stages")
+                # plt.legend()
+                # plt.savefig(f"model_curricula_plots/curriculum_stages_{env_name}.png")
                 if self.parent.rolling_n_returns[-1] > self.best_eval_return:
                     self.best_eval_return = self.parent.rolling_n_returns[-1]
             self.parent.logger.record(

@@ -70,7 +70,7 @@ def reward_var_curriculum(guide_vals, n_curriculum_stages):
     return_diff = np.abs(var_returns[1:] - var_returns[:-1])
     return_diff = np.concatenate((return_diff, [var_returns[-1]]))
     perc = np.percentile(
-        return_diff[return_diff != 0],
+        return_diff,
         np.linspace((100 / n_curriculum_stages), 100, n_curriculum_stages),
     )
     perc_dict = {}
@@ -80,9 +80,9 @@ def reward_var_curriculum(guide_vals, n_curriculum_stages):
             idxs = np.where(return_diff <= p)[0]
         else:
             idxs = np.where((return_diff <= p) & (return_diff >= perc[i - 1]))[0]
-        if len(idxs) > len(returns) / n_curriculum_stages:
+        if len(idxs) > len(return_diff) / n_curriculum_stages:
             idxs = sorted(idxs, reverse=True)
-            idxs = idxs[: int(len(returns) / n_curriculum_stages)]
+            idxs = idxs[: int(len(return_diff) / n_curriculum_stages)]
             return_diff[idxs] = np.inf  # Prevents idxs from being used again
         curric_dict[i] = idxs
         perc_dict[i] = p
@@ -99,7 +99,7 @@ CURRICULUM_FNS = {
         "accumulator_fn": None,
         "generate_curriculum_fn": reward_var_curriculum,
     },
-    "var_n_adaptive": {
+    "var_nn_adaptive": {
         "action_choice_fn": reward_var_action_choice,
         "accumulator_fn": None,
         "generate_curriculum_fn": reward_var_curriculum,

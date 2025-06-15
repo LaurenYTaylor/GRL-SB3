@@ -11,7 +11,10 @@ def reward_var_action_choice(config):
         return False, None
     if REWARD_VAR_MAP == {}:
         return False, None
-    if config["time_step"] in REWARD_VAR_CURRIC_MAP[config["curriculum_stage_idx"]]:
+    all_ts = []
+    for i in range(config["curriculum_stage_idx"] + 1):
+        all_ts.extend(REWARD_VAR_CURRIC_MAP[i])
+    if config["time_step"] in all_ts:
         use_learner = True
     # reward_var = REWARD_VAR_MAP[config["time_step"]]
     # if reward_var <= config["curriculum_stages"][config["curriculum_stage_idx"]]:

@@ -229,6 +229,7 @@ def evaluate_imperfect_policy(
 
 def evaluate_policy_patch(
     model: "type_aliases.PolicyPredictor",
+    action_selector,
     env: Union[gym.Env, VecEnv],
     n_eval_episodes: int = 10,
     deterministic: bool = True,
@@ -332,9 +333,14 @@ def evaluate_policy_patch(
             "variance_fn": model.variance_fn,
             "exp_time_step_coeff": model.exp_time_step_coeff,
         }
-        use_learner, curriculum_val = model.learner_or_guide_action(choice_config)
+        # use_learner, curriculum_val = model.learner_or_guide_action(choice_config)
+        use_learner = True
+        if use_learner:
+            if action_selector.predict(observations)[0][0] == 0:
+                use_learner = False
         if model.curriculum_stage_idx == len(model.curriculum_stages) - 1:
             use_learner = True
+        curriculum_val = 0
         if current_lengths[0] > 0:
             ep_curriculum_values.append(curriculum_val)
             ep_learner_usage.append(int(use_learner))
@@ -457,6 +463,8 @@ def train_patch(self, gradient_steps: int, batch_size: int = 64) -> None:
 
         # Action by the current actor for the sampled state
         actions_pi, log_prob = self.actor.action_log_prob(replay_data.observations)
+        selected_q_values_log, guide_q_values_log = [], []
+        policy_means = []
         log_prob = log_prob.reshape(-1, 1)
 
         ent_coef_loss = None
@@ -511,6 +519,48 @@ def train_patch(self, gradient_steps: int, batch_size: int = 64) -> None:
         assert isinstance(critic_loss, th.Tensor)  # for type checker
         critic_losses.append(critic_loss.item())  # type: ignore[union-attr]
 
+        with th.no_grad():
+            policy_actions = self.actor(replay_data.observations)
+            guide_actions = self.guide_policy.actor(replay_data.observations).detach()
+        action_selector, logits = self.action_selector(
+            replay_data.observations, return_logits=True
+        )
+
+        # Stack policy and guide actions into shape (256, 26, 2)
+        concat_actions = torch.stack((policy_actions, guide_actions), dim=-1)
+        # Expand action_selector to (256, 1, 2) and let broadcasting handle multiplication
+        multiplied_actions = concat_actions * action_selector.unsqueeze(1)
+        # Sum along the last dimension to get final shape (256, 26)
+        selected_actions = multiplied_actions.sum(dim=-1)
+
+        selected_q_values = th.cat(
+            self.critic(replay_data.observations, selected_actions), dim=1
+        )
+        selected_q_values, _ = th.min(selected_q_values, dim=1, keepdim=True)
+        guide_q_values = th.cat(
+            self.critic(replay_data.observations, guide_actions), dim=1
+        ).detach()
+        guide_q_values, _ = th.min(guide_q_values, dim=1, keepdim=True)
+
+        mean_policy = th.mean(action_selector[:, 0])
+
+        action_selector_loss = (selected_q_values - guide_q_values).mean() + (
+            selected_q_values - guide_q_values
+        ).mean() * mean_policy
+        print(torch.softmax(logits, dim=-1))
+        selector_entropy_loss = -torch.mean(
+            torch.softmax(logits, dim=-1)
+            * torch.log(torch.softmax(logits, dim=-1) + 1e-8)
+        )
+        action_selector_loss += selector_entropy_loss
+        self.action_selector.optimizer.zero_grad()
+        action_selector_loss.backward()
+        self.action_selector.optimizer.step()
+        action_selector_losses.append(action_selector_loss.item())
+        selected_q_values_log.append(selected_q_values.mean().item())
+        guide_q_values_log.append(guide_q_values.mean().item())
+        policy_means.append(mean_policy.item())
+
         # Optimize the critic
         self.critic.optimizer.zero_grad()
         critic_loss.backward()
@@ -528,6 +578,9 @@ def train_patch(self, gradient_steps: int, batch_size: int = 64) -> None:
         self.actor.optimizer.zero_grad()
         actor_loss.backward()
         self.actor.optimizer.step()
+        # from torchviz import make_dot
+        # make_dot(actor_loss, params=dict(self.actor.named_parameters())).render("actor_loss", format="pdf")
+        # exit()
 
         # Update target networks
         if gradient_step % self.target_update_interval == 0:
@@ -543,6 +596,12 @@ def train_patch(self, gradient_steps: int, batch_size: int = 64) -> None:
     self.logger.record("train/ent_coef", np.mean(ent_coefs))
     self.logger.record("train/actor_loss", np.mean(actor_losses))
     self.logger.record("train/critic_loss", np.mean(critic_losses))
+    self.logger.record("train/action_selector_loss", np.mean(action_selector_losses))
+    self.logger.record(
+        "train/q_value_diff",
+        np.mean(selected_q_values_log) - np.mean(guide_q_values_log),
+    )
+    self.logger.record("train/mean_policy", np.mean(policy_means))
     if len(ent_coef_losses) > 0:
         self.logger.record("train/ent_coef_loss", np.mean(ent_coef_losses))
 
@@ -593,24 +652,27 @@ def _sample_action_patch(
         if self.curriculum_stage_idx == len(self.curriculum_stages) - 1:
             use_learner = True
         else:
-            use_learner, self.curriculum_val_t = self.learner_or_guide_action(
-                choice_config
-            )
-    use_guide = True
+            # use_learner, self.curriculum_val_t = self.learner_or_guide_action(
+            #     choice_config
+            # )
+            use_learner = True
+
+    if np.random.random() < self.guide_randomness:
+        guide_act = np.array([self.action_space.sample() for _ in range(n_envs)])
+    else:
+        guide_act, _ = self.guide_policy.predict(self._last_obs, deterministic=True)
+
     if use_learner:
         unscaled_action, _ = self.predict(self._last_obs, deterministic=False)
-        if torch.isinf(unscaled_action).any():
-            use_guide = True
-    if use_guide:
-        if np.random.random() < self.guide_randomness:
-            unscaled_action = np.array(
-                [self.action_space.sample() for _ in range(n_envs)]
+        if self.horizon_fn == "var_nn_adaptive":
+            selector = self.action_selector.predict(self._last_obs)
+            if selector[0][0] == 0:
+                use_learner = False
+            unscaled_action = np.sum(
+                np.stack((unscaled_action, guide_act), axis=-1) * selector, axis=-1
             )
-        else:
-            unscaled_action, _ = self.guide_policy.predict(
-                self._last_obs, deterministic=True
-            )
-
+    else:
+        unscaled_action = guide_act
     # Rescale the action from [low, high] to [-1, 1]
     if isinstance(self.action_space, spaces.Box):
         scaled_action = self.policy.scale_action(unscaled_action)
@@ -680,9 +742,6 @@ def run_grl_training(config, seed):
 
     # Patch the algo with modified functions
     SAC._sample_action = _sample_action_patch
-    if config["grl_config"]["horizon_fn"] == "var_nn_adaptive":
-        SAC.train = train_patch
-        SAC.SACPolicy = SACPolicyPatch
     sb3_eval.evaluate_policy = evaluate_policy_patch
     # SAC._store_transition = _store_transition_patch
 
@@ -723,6 +782,9 @@ def run_grl_training(config, seed):
     )
 
     # Create the model
+    if config["grl_config"]["horizon_fn"] == "var_nn_adaptive":
+        SAC.policy_aliases["MlpPolicy"] = SACPolicyPatch
+        SAC.train = train_patch
     model = SAC(
         "MlpPolicy",
         env,
@@ -731,6 +793,8 @@ def run_grl_training(config, seed):
         tensorboard_log=f"./saved_models/{env_name}_{algo}_{config['seed']}",
         verbose=1,
     )
+    if config["grl_config"]["horizon_fn"] == "var_nn_adaptive":
+        model.action_selector = model.policy.action_selector
 
     # Train
     model.learn(

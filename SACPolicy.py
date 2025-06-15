@@ -21,8 +21,7 @@ from stable_baselines3.common.torch_layers import (
     get_actor_critic_arch,
 )
 from stable_baselines3.common.type_aliases import PyTorchObs, Schedule
-from stable_baselines3.sac.actor import Actor
-from stable_baselines3.sac.critic import ContinuousCritic
+from stable_baselines3.sac.policies import Actor, ContinuousCritic
 
 # CAP the standard deviation of the actor
 LOG_STD_MAX = 2
@@ -59,6 +58,7 @@ class ActionSelector(BaseModel):
         activation_fn: type[nn.Module] = nn.ReLU,
         normalize_images: bool = True,
         share_features_extractor: bool = True,
+        tau: int = 1,
     ):
         super().__init__(
             observation_space,
@@ -68,22 +68,29 @@ class ActionSelector(BaseModel):
         )
 
         self.share_features_extractor = share_features_extractor
-        self.action_selector_net: nn.Module = create_mlp(
-            features_dim, 2, net_arch, activation_fn
+        self.action_selector_net: nn.Module = nn.Sequential(
+            *create_mlp(features_dim, 2, net_arch, activation_fn)
         )
-        self.add_module(f"as", self.action_selector_net)
+        self.tau = tau
 
-    def forward(self, obs: th.Tensor) -> tuple[th.Tensor, ...]:
+    def predict(self, obs: np.array) -> tuple[th.Tensor, ...]:
+        obs = self.obs_to_tensor(obs)[0]
+        result = self.forward(obs).detach().cpu().numpy()
+        return result
+
+    def forward(self, obs: th.Tensor, return_logits=False) -> tuple[th.Tensor, ...]:
         # Learn the features extractor using the policy loss only
         # when the features_extractor is shared with the actor
         with th.set_grad_enabled(not self.share_features_extractor):
             features = self.extract_features(obs, self.features_extractor)
-        choice = self.action_selector_net(features)
-        result = [1, -np.inf][choice.argmax(dim=-1).item()]
-        return torch.Tensor(result)
+        logits = self.action_selector_net(features)
+        result = torch.nn.functional.gumbel_softmax(logits, tau=self.tau, hard=True)
+        if return_logits:
+            return result, logits
+        return result
 
 
-class SACPolicy(BasePolicy):
+class SACPolicyPatch(BasePolicy):
     """
     Policy class (with both actor and critic) for SAC.
 
@@ -180,6 +187,7 @@ class SACPolicy(BasePolicy):
         )
         self.action_selector_kwargs = self.critic_kwargs.copy()
         self.action_selector_kwargs["share_features_extractor"] = True
+        del self.action_selector_kwargs["n_critics"]
 
         self.share_features_extractor = share_features_extractor
 
@@ -295,14 +303,13 @@ class SACPolicy(BasePolicy):
 
     def forward(self, obs: PyTorchObs, deterministic: bool = False) -> th.Tensor:
         prediction = self._predict(obs, deterministic=deterministic)
-        if not deterministic:
-            prediction = torch.mul(prediction, self.action_selector(obs))
         return prediction
 
     def _predict(
         self, observation: PyTorchObs, deterministic: bool = False
     ) -> th.Tensor:
-        return self.actor(observation, deterministic)
+        prediction = self.actor(observation, deterministic)
+        return prediction
 
     def set_training_mode(self, mode: bool) -> None:
         """
