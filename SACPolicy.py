@@ -72,6 +72,9 @@ class ActionSelector(BaseModel):
             *create_mlp(features_dim, 2, net_arch, activation_fn)
         )
         self.tau = tau
+        self.action_selector_net.state_dict()["4.bias"] = (
+            self.action_selector_net.state_dict()["4.bias"] - 10
+        )
 
     def predict(self, obs: np.array) -> tuple[th.Tensor, ...]:
         obs = self.obs_to_tensor(obs)[0]
@@ -195,6 +198,9 @@ class SACPolicyPatch(BasePolicy):
 
     def _build(self, lr_schedule: Schedule) -> None:
         self.actor = self.make_actor()
+        # Do not optimize the shared features extractor with the critic loss
+        # otherwise, there are gradient computation issues
+
         self.actor.optimizer = self.optimizer_class(
             self.actor.parameters(),
             lr=lr_schedule(1),  # type: ignore[call-arg]
@@ -234,14 +240,11 @@ class SACPolicyPatch(BasePolicy):
         self.action_selector = self.make_action_selector(
             features_extractor=self.actor.features_extractor
         )
-        # Do not optimize the shared features extractor with the critic loss
-        # otherwise, there are gradient computation issues
         action_selector_parameters = [
             param
             for name, param in self.action_selector.named_parameters()
             if "features_extractor" not in name
         ]
-
         self.action_selector.optimizer = self.optimizer_class(
             action_selector_parameters,
             lr=lr_schedule(1),  # type: ignore[call-arg]

@@ -34,6 +34,7 @@ from experimental_utils import (
     collect_rollouts_patch,
 )
 from SACPolicy import SACPolicyPatch
+from GRLReplayBuffer import GRLReplayBuffer
 
 from typing import Any, Optional, Union
 
@@ -333,9 +334,9 @@ def evaluate_policy_patch(
             "variance_fn": model.variance_fn,
             "exp_time_step_coeff": model.exp_time_step_coeff,
         }
-        # use_learner, curriculum_val = model.learner_or_guide_action(choice_config)
-        use_learner = True
-        if use_learner:
+        use_learner, curriculum_val = model.learner_or_guide_action(choice_config)
+        # use_learner = True
+        if use_learner and model.horizon_fn == "var_nn_adaptive":
             if action_selector.predict(observations)[0][0] == 0:
                 use_learner = False
         if model.curriculum_stage_idx == len(model.curriculum_stages) - 1:
@@ -442,7 +443,7 @@ def train_patch(self, gradient_steps: int, batch_size: int = 64) -> None:
     optimizers = [
         self.actor.optimizer,
         self.critic.optimizer,
-        self.action_selector.optimizer,
+        # self.action_selector.optimizer,
     ]
     if self.ent_coef_optimizer is not None:
         optimizers += [self.ent_coef_optimizer]
@@ -456,13 +457,28 @@ def train_patch(self, gradient_steps: int, batch_size: int = 64) -> None:
     for gradient_step in range(gradient_steps):
         # Sample replay buffer
         replay_data = self.replay_buffer.sample(batch_size, env=self._vec_normalize_env)  # type: ignore[union-attr]
-
         # We need to sample because `log_std` may have changed between two gradient steps
         if self.use_sde:
             self.actor.reset_noise()
 
         # Action by the current actor for the sampled state
-        actions_pi, log_prob = self.actor.action_log_prob(replay_data.observations)
+        original_actions_pi, log_prob = self.actor.action_log_prob(
+            replay_data.observations
+        )
+        # print(log_prob[-10:].tolist())
+        actions_taken = self.replay_buffer.to_torch(replay_data.actions)
+        actions_taken_prob = torch.clip(
+            self.actor.action_dist.log_prob(actions_taken), -100, 100
+        )
+
+        selected_guide = 1 - replay_data.used_learner
+        selected_learner = replay_data.used_learner
+        actions_pi = (
+            original_actions_pi * selected_learner + actions_taken * selected_guide
+        )
+        log_prob = log_prob * torch.squeeze(
+            selected_learner, 1
+        ) + actions_taken_prob * torch.squeeze(selected_guide, 1)
         selected_q_values_log, guide_q_values_log = [], []
         policy_means = []
         log_prob = log_prob.reshape(-1, 1)
@@ -519,47 +535,36 @@ def train_patch(self, gradient_steps: int, batch_size: int = 64) -> None:
         assert isinstance(critic_loss, th.Tensor)  # for type checker
         critic_losses.append(critic_loss.item())  # type: ignore[union-attr]
 
-        with th.no_grad():
-            policy_actions = self.actor(replay_data.observations)
-            guide_actions = self.guide_policy.actor(replay_data.observations).detach()
         action_selector, logits = self.action_selector(
             replay_data.observations, return_logits=True
         )
+        action_selector = action_selector[:, 0]
+        mean_learner_used = action_selector.mean()
+        policy_means.append(mean_learner_used.item())
+        with torch.no_grad():
+            original_q_values = th.min(
+                th.cat(
+                    self.critic(replay_data.observations, original_actions_pi.detach()),
+                    dim=1,
+                ),
+                dim=1,
+                keepdim=True,
+            )[0]
+        selected_actions_pi = original_actions_pi.detach() * torch.unsqueeze(
+            action_selector, 1
+        ) + actions_taken.detach() * torch.unsqueeze((1 - action_selector), 1)
+        selected_q_values = th.min(
+            th.cat(self.critic(replay_data.observations, selected_actions_pi), dim=1),
+            dim=1,
+            keepdim=True,
+        )[0]
+        import pdb
 
-        # Stack policy and guide actions into shape (256, 26, 2)
-        concat_actions = torch.stack((policy_actions, guide_actions), dim=-1)
-        # Expand action_selector to (256, 1, 2) and let broadcasting handle multiplication
-        multiplied_actions = concat_actions * action_selector.unsqueeze(1)
-        # Sum along the last dimension to get final shape (256, 26)
-        selected_actions = multiplied_actions.sum(dim=-1)
-
-        selected_q_values = th.cat(
-            self.critic(replay_data.observations, selected_actions), dim=1
-        )
-        selected_q_values, _ = th.min(selected_q_values, dim=1, keepdim=True)
-        guide_q_values = th.cat(
-            self.critic(replay_data.observations, guide_actions), dim=1
-        ).detach()
-        guide_q_values, _ = th.min(guide_q_values, dim=1, keepdim=True)
-
-        mean_policy = th.mean(action_selector[:, 0])
-
-        action_selector_loss = (selected_q_values - guide_q_values).mean() + (
-            selected_q_values - guide_q_values
-        ).mean() * mean_policy
-        print(torch.softmax(logits, dim=-1))
-        selector_entropy_loss = -torch.mean(
-            torch.softmax(logits, dim=-1)
-            * torch.log(torch.softmax(logits, dim=-1) + 1e-8)
-        )
-        action_selector_loss += selector_entropy_loss
-        self.action_selector.optimizer.zero_grad()
-        action_selector_loss.backward()
-        self.action_selector.optimizer.step()
-        action_selector_losses.append(action_selector_loss.item())
-        selected_q_values_log.append(selected_q_values.mean().item())
-        guide_q_values_log.append(guide_q_values.mean().item())
-        policy_means.append(mean_policy.item())
+        pdb.set_trace()
+        # action_selector_losses = (action_selector-(selected_q_values>original_q_values).float()).mean()
+        # self.action_selector.optimizer.zero_grad()
+        # action_selector_losses.backward()
+        # self.action_selector.optimizer.step()
 
         # Optimize the critic
         self.critic.optimizer.zero_grad()
@@ -579,7 +584,7 @@ def train_patch(self, gradient_steps: int, batch_size: int = 64) -> None:
         actor_loss.backward()
         self.actor.optimizer.step()
         # from torchviz import make_dot
-        # make_dot(actor_loss, params=dict(self.actor.named_parameters())).render("actor_loss", format="pdf")
+        # make_dot(actor_loss, params=dict(self.actor.named_parameters())).render("action_selector_loss", format="pdf")
         # exit()
 
         # Update target networks
@@ -596,11 +601,11 @@ def train_patch(self, gradient_steps: int, batch_size: int = 64) -> None:
     self.logger.record("train/ent_coef", np.mean(ent_coefs))
     self.logger.record("train/actor_loss", np.mean(actor_losses))
     self.logger.record("train/critic_loss", np.mean(critic_losses))
-    self.logger.record("train/action_selector_loss", np.mean(action_selector_losses))
-    self.logger.record(
-        "train/q_value_diff",
-        np.mean(selected_q_values_log) - np.mean(guide_q_values_log),
-    )
+    # self.logger.record("train/action_selector_loss", np.mean(action_selector_losses))
+    # self.logger.record(
+    #     "train/q_value_diff",
+    #     np.mean(selected_q_values_log) - np.mean(guide_q_values_log),
+    # )
     self.logger.record("train/mean_policy", np.mean(policy_means))
     if len(ent_coef_losses) > 0:
         self.logger.record("train/ent_coef_loss", np.mean(ent_coef_losses))
@@ -652,10 +657,10 @@ def _sample_action_patch(
         if self.curriculum_stage_idx == len(self.curriculum_stages) - 1:
             use_learner = True
         else:
-            # use_learner, self.curriculum_val_t = self.learner_or_guide_action(
-            #     choice_config
-            # )
-            use_learner = True
+            use_learner, self.curriculum_val_t = self.learner_or_guide_action(
+                choice_config
+            )
+        # use_learner = True
 
     if np.random.random() < self.guide_randomness:
         guide_act = np.array([self.action_space.sample() for _ in range(n_envs)])
@@ -668,9 +673,9 @@ def _sample_action_patch(
             selector = self.action_selector.predict(self._last_obs)
             if selector[0][0] == 0:
                 use_learner = False
-            unscaled_action = np.sum(
-                np.stack((unscaled_action, guide_act), axis=-1) * selector, axis=-1
-            )
+            # unscaled_action = np.sum(
+            #    np.stack((unscaled_action, guide_act), axis=-1) * selector, axis=-1
+            # )
     else:
         unscaled_action = guide_act
     # Rescale the action from [low, high] to [-1, 1]
@@ -792,9 +797,12 @@ def run_grl_training(config, seed):
         **config["algo_config"],
         tensorboard_log=f"./saved_models/{env_name}_{algo}_{config['seed']}",
         verbose=1,
+        replay_buffer_class=GRLReplayBuffer,
     )
     if config["grl_config"]["horizon_fn"] == "var_nn_adaptive":
         model.action_selector = model.policy.action_selector
+    else:
+        model.action_selector = None
 
     # Train
     model.learn(

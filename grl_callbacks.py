@@ -76,6 +76,12 @@ class CurriculumMgmtCallback(BaseCallback):
         self.model.ep_timestep = 0
 
     def _on_step(self) -> bool:
+        self.locals["replay_buffer"].add_grl_specific(
+            {
+                "used_learner": self.model.last_use_learner,
+                "time_step": self.model.ep_timestep,
+            }
+        )
         done = self.locals["dones"][-1]
         if done:
             self.logger.record(
@@ -90,7 +96,6 @@ class CurriculumMgmtCallback(BaseCallback):
         else:
             self.model.ep_timestep += 1
             self.model.ep_curriculum_values.append(self.model.curriculum_val_t)
-        self.locals["infos"][-1]["last_use_learner"] = self.model.last_use_learner
         return True
 
 
