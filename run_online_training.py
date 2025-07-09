@@ -16,7 +16,8 @@ def train(env_name, horizon_fn, seeds, guide_in_buffer=False, tune=False, debug=
             env_names = [env_name]
         if horizon_fn == "all":
             # horizon_fns = ["agent_type", "time_step", "goal_dist", "variance"]
-            horizon_fns = ["exp_time_step", "time_step"]
+            # horizon_fns = ["exp_time_step", "time_step"]
+            horizon_fns = ["agent_type", "time_step"]
         else:
             horizon_fns = [horizon_fn]
         if guide_in_buffer == "all":
@@ -62,7 +63,7 @@ if __name__ == "__main__":
         "--guide_in_buffer",
         type=str,
         help="Whether to add guide transitions to the buffer",
-        default="0",
+        default="1",
         required=False,
     )
     argparse.add_argument(

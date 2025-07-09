@@ -9,9 +9,9 @@ env_names = [
     # "AntMaze_UMaze-v5"
     # "Pusher-v5",
     # "InvertedDoublePendulum-v5",
-    # "Hopper-v5",
+    "Hopper-v5",
 ]
-algorithms = ["SAC", "SAC", "PPO", "SAC"]  # , #"SAC", "SAC", "PPO", "SAC"]
+algorithms = ["SAC", "SAC", "PPO", "SAC", "SAC"]  # , #"SAC", "SAC", "PPO", "SAC"]
 # algorithms = ["SAC", "SAC", "PPO"]
 algorithm_dict = dict(zip(env_names, algorithms))
 paths_dict = dict(
@@ -25,7 +25,7 @@ paths_dict = dict(
 )
 
 DEFAULT_CONFIG = {
-    "eval_freq": 5000,
+    "eval_freq": 10000,
     "n_eval_episodes": 150,
     "pretrain_eval_episodes": 500,
     "training_steps": 1000000,
@@ -39,13 +39,13 @@ DEFAULT_CONFIG = {
         "exp_time_step_coeff": 0.001,
     },
     "algo_config": {
-        "buffer_size": 500000,
+        "buffer_size": 10000,
         "batch_size": 256,
         "learning_starts": 0,
         "train_freq": 1,
         "gradient_steps": 1,
         "learning_rate": 0.0005,
-        "ent_coef": 5,
+        # "ent_coef": 5,
     },
 }
 

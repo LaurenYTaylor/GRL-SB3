@@ -167,6 +167,7 @@ class CurriculumMgmtCallback(BaseCallback):
         self.model.guide_policy = self.guide_policy
         self.model.guide_return = self.guide_return
         self.model.guide_randomness = self.curriculum_config["guide_randomness"]
+        self.logger.record("eval/mean_reward", self.guide_return)
         self.model.rolling_mean_n = self.curriculum_config["rolling_mean_n"]
         self.model.tolerance = self.curriculum_config["tolerance"]
         self.model.guide_curriculum_val = self.guide_curriculum_val
@@ -196,6 +197,12 @@ class CurriculumMgmtCallback(BaseCallback):
         self.model.ep_timestep = 0
 
     def _on_step(self) -> bool:
+        self.locals["replay_buffer"].add_grl_specific(
+            {
+                "used_learner": self.model.last_use_learner,
+                "time_step": self.model.ep_timestep,
+            }
+        )
         done = self.locals["dones"][-1]
         if done:
             self.logger.record(
@@ -258,4 +265,8 @@ class CurriculumStageUpdateCallback(BaseCallback):
             "eval/curriculum_stage_idx", self.model.curriculum_stage_idx
         )
         self.parent.logger.record("eval/best_eval_w_tolerance", prev_best)
+        self.parent.logger.record(
+            "eval/curriculum_stage",
+            self.parent.model.curriculum_stages[self.model.curriculum_stage_idx],
+        )
         return True

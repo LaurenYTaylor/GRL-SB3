@@ -32,7 +32,7 @@ def variance_action_choice(config):
     var = var.item()
     if len(config["curriculum_stages"]) == 0:
         return False, var
-    if var <= config["curriculum_stage"]:
+    if var <= config["curriculum_stages"][config["curriculum_stage_idx"]]:
         use_learner = True
     return use_learner, var
 
@@ -107,6 +107,7 @@ def timestep_action_choice(config):
 
     """
     use_learner = False
+
     if len(config["curriculum_stages"]) == 0:
         return False, config["time_step"]
     if (
@@ -147,8 +148,11 @@ def agent_type_action_choice(config):
 
     if len(config["curriculum_stages"]) == 0:
         return False, 0.0
-    if curriculum_val_ep <= config["curriculum_stage"]:
-        use_learner = np.random.sample() < config["curriculum_stage"]
+    if curriculum_val_ep <= config["curriculum_stages"][config["curriculum_stage_idx"]]:
+        use_learner = (
+            np.random.sample()
+            < config["curriculum_stages"][config["curriculum_stage_idx"]]
+        )
     return use_learner, float(use_learner)
 
 
@@ -178,6 +182,6 @@ def goal_distance_action_choice(config):
     goal_dist = goal_dist_calc(config["obs"], config["env"])
     if len(config["curriculum_stages"]) == 0:
         return False, goal_dist
-    if goal_dist <= config["curriculum_stage"]:
+    if goal_dist <= config["curriculum_stages"][config["curriculum_stage_idx"]]:
         use_learner = True
     return use_learner, goal_dist

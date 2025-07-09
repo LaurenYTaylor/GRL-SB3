@@ -51,6 +51,49 @@ def agent_type_curriculum(_, n_curriculum_stages):
     return curric
 
 
+def reward_var_curriculum(guide_vals, n_curriculum_stages):
+    step_means = []
+    for k, v in guide_vals.items():
+        step_means.append(np.array(v))
+    rewards_matrix = np.array(step_means)
+    per_episode = rewards_matrix.T
+
+    gamma = 0.99
+    returns = np.zeros_like(per_episode)
+    for i in range(per_episode.shape[1], 0, -1):
+        if i == per_episode.shape[1]:
+            returns[:, i - 1] = per_episode[:, i - 1]
+        else:
+            returns[:, i - 1] = per_episode[:, i - 1] + gamma * returns[:, i]
+    # reward_diffs.append(0.0)
+    # curric_dict = dict(zip(range(len(reward_diffs)), reward_diffs))
+    var_returns = np.var(returns, axis=0)
+    return_diff = np.abs(var_returns[1:] - var_returns[:-1])
+    return_diff = np.concatenate((return_diff, [var_returns[-1]]))
+    perc = np.percentile(
+        return_diff,
+        np.linspace((100 / n_curriculum_stages), 100, n_curriculum_stages),
+    )
+    perc_dict = {}
+    curric_dict = {}
+    for i, p in enumerate(perc):
+        if i == 0:
+            idxs = np.where(return_diff <= p)[0]
+        else:
+            idxs = np.where((return_diff <= p) & (return_diff >= perc[i - 1]))[0]
+        if len(idxs) > len(return_diff) / n_curriculum_stages:
+            idxs = sorted(idxs, reverse=True)
+            idxs = idxs[: int(len(return_diff) / n_curriculum_stages)]
+            return_diff[idxs] = np.inf  # Prevents idxs from being used again
+        curric_dict[i] = idxs
+        perc_dict[i] = p
+    import curriculum_action_choice_utils
+
+    curriculum_action_choice_utils.REWARD_VAR_MAP = perc_dict
+    curriculum_action_choice_utils.REWARD_VAR_CURRIC_MAP = curric_dict
+    return perc
+
+
 CURRICULUM_FNS = {
     "time_step": {
         "action_choice_fn": timestep_action_choice,

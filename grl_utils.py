@@ -32,10 +32,12 @@ from grl_callbacks import (
 from variance_trainer import StateDepFunction, VarianceLearner
 from curriculum_utils import CURRICULUM_FNS
 from experimental_utils import (
-    train_patch,
-    _store_transition_patch,
     collect_rollouts_patch,
 )
+from GRLReplayBuffer import GRLReplayBuffer
+import torch as th
+from torch.nn import functional as F
+from stable_baselines3.common.utils import polyak_update
 
 MODELS = {"SAC": SAC, "PPO": PPO}
 
@@ -476,6 +478,173 @@ def _sample_action_patch(
         return action, buffer_action
 
 
+def train_patch(self, gradient_steps: int, batch_size: int = 64) -> None:
+    # Switch to train mode (this affects batch norm / dropout)
+    self.policy.set_training_mode(True)
+    # Update optimizers learning rate
+    optimizers = [
+        self.actor.optimizer,
+        self.critic.optimizer,
+        # self.action_selector.optimizer,
+    ]
+    if self.ent_coef_optimizer is not None:
+        optimizers += [self.ent_coef_optimizer]
+
+    # Update learning rate according to lr schedule
+    self._update_learning_rate(optimizers)
+
+    ent_coef_losses, ent_coefs = [], []
+    actor_losses, critic_losses = [], []
+    log_probs_actor = []
+    log_probs_all = []
+    policy_means = []
+    target_qs = []
+    buffer_qs = []
+    buffer_adjusted_qs = []
+    for gradient_step in range(gradient_steps):
+        # Sample replay buffer
+        replay_data = self.replay_buffer.sample(batch_size, env=self._vec_normalize_env)  # type: ignore[union-attr]
+        # We need to sample because `log_std` may have changed between two gradient steps
+        if self.use_sde:
+            self.actor.reset_noise()
+
+        # Action by the current actor for the sampled state
+        try:
+            original_actions_pi, original_log_prob = self.actor.action_log_prob(
+                replay_data.observations
+            )
+            log_probs_actor.append(original_log_prob.mean().item())
+        except ValueError:
+            import pdb
+
+            pdb.set_trace()
+
+        actions_taken = self.replay_buffer.to_torch(replay_data.actions)
+        actions_taken_prob = torch.clip(
+            self.actor.action_dist.log_prob(actions_taken), -1e4, 1e4
+        )
+
+        selected_guide = 1 - replay_data.used_learner
+        selected_learner = replay_data.used_learner
+        policy_means.append(np.mean(replay_data.used_learner.cpu().numpy()))
+
+        actions_pi = (
+            original_actions_pi * selected_learner + actions_taken * selected_guide
+        )
+        log_prob = original_log_prob * torch.squeeze(
+            selected_learner, 1
+        ) + actions_taken_prob * torch.squeeze(selected_guide, 1)
+
+        actions_pi = original_actions_pi
+        log_prob = original_log_prob
+        log_probs_all.append(log_prob.mean().item())
+        # print(actions_taken_prob)
+        log_prob = log_prob.reshape(-1, 1)
+
+        ent_coef_loss = None
+        if self.ent_coef_optimizer is not None and self.log_ent_coef is not None:
+            # Important: detach the variable from the graph
+            # so we don't change it with other losses
+            # see https://github.com/rail-berkeley/softlearning/issues/60
+            ent_coef = th.exp(self.log_ent_coef.detach())
+            assert isinstance(self.target_entropy, float)
+            ent_coef_loss = -(
+                self.log_ent_coef * (original_log_prob + self.target_entropy).detach()
+            ).mean()
+            ent_coef_losses.append(ent_coef_loss.item())
+        else:
+            ent_coef = self.ent_coef_tensor
+
+        ent_coefs.append(ent_coef.item())
+
+        # Optimize entropy coefficient, also called
+        # entropy temperature or alpha in the paper
+        if ent_coef_loss is not None and self.ent_coef_optimizer is not None:
+            self.ent_coef_optimizer.zero_grad()
+            ent_coef_loss.backward()
+            self.ent_coef_optimizer.step()
+
+        with th.no_grad():
+            # Select action according to policy
+            next_actions, next_log_prob = self.actor.action_log_prob(
+                replay_data.next_observations
+            )
+            # next_guide_actions,_ = self.guide_policy.predict(replay_data.next_observations.cpu(), deterministic=True)
+            # next_guide_actions = th.tensor(next_guide_actions, device=next_actions.device)
+            # next_guide_log_prob = torch.clip(self.actor.action_dist.log_prob(next_guide_actions), -1e4, 1e4)
+            # next_actions = (next_actions * selected_learner + next_guide_actions * selected_guide)
+            # Compute the next Q values: min over all critics targets
+            next_q_values = th.cat(
+                self.critic_target(replay_data.next_observations, next_actions), dim=1
+            )
+            next_q_values, _ = th.min(next_q_values, dim=1, keepdim=True)
+            # add entropy term
+            next_q_values = next_q_values - ent_coef * next_log_prob.reshape(-1, 1)
+            # td error + entropy term
+            target_q_values = (
+                replay_data.rewards
+                + (1 - replay_data.dones) * self.gamma * next_q_values
+            )
+            target_qs.append(target_q_values.mean().item())
+
+        # Get current Q-values estimates for each critic network
+        # using action from the replay buffer
+        current_q_values = self.critic(replay_data.observations, replay_data.actions)
+        # Compute critic loss
+        critic_loss = 0.5 * sum(
+            F.mse_loss(current_q, target_q_values) for current_q in current_q_values
+        )
+        assert isinstance(critic_loss, th.Tensor)  # for type checker
+        critic_losses.append(critic_loss.item())  # type: ignore[union-attr]
+        buffer_qs.append(
+            np.max(
+                [current_q_values[0].mean().item(), current_q_values[1].mean().item()]
+            )
+        )
+
+        # Optimize the critic
+        self.critic.optimizer.zero_grad()
+        critic_loss.backward()
+        self.critic.optimizer.step()
+
+        # Compute actor loss
+        # Alternative: actor_loss = th.mean(log_prob - qf1_pi)
+        # Min over all critic networks
+        q_values_pi = th.cat(self.critic(replay_data.observations, actions_pi), dim=1)
+        min_qf_pi, _ = th.min(q_values_pi, dim=1, keepdim=True)
+        actor_loss = (ent_coef * log_prob - min_qf_pi).mean()
+        actor_losses.append(actor_loss.item())
+
+        # Optimize the actor
+        self.actor.optimizer.zero_grad()
+        actor_loss.backward()
+        self.actor.optimizer.step()
+        buffer_adjusted_qs.append(min_qf_pi.mean().item())
+
+        # Update target networks
+        if gradient_step % self.target_update_interval == 0:
+            polyak_update(
+                self.critic.parameters(), self.critic_target.parameters(), self.tau
+            )
+            # Copy running stats, see GH issue #996
+            polyak_update(self.batch_norm_stats, self.batch_norm_stats_target, 1.0)
+
+    self._n_updates += gradient_steps
+
+    self.logger.record("train/n_updates", self._n_updates, exclude="tensorboard")
+    self.logger.record("train/ent_coef", np.mean(ent_coefs))
+    self.logger.record("train/actor_loss", np.mean(actor_losses))
+    self.logger.record("train/critic_loss", np.mean(critic_losses))
+    self.logger.record("train/mean_policy", np.mean(policy_means))
+    if len(ent_coef_losses) > 0:
+        self.logger.record("train/ent_coef_loss", np.mean(ent_coef_losses))
+    self.logger.record("train/log_prob_actor", np.mean(log_probs_actor))
+    self.logger.record("train/log_prob_all", np.mean(log_probs_all))
+    self.logger.record("train/target_qs", np.mean(buffer_qs))
+    self.logger.record("train/buffer_qs", np.mean(buffer_qs))
+    self.logger.record("train/buffer_adjusted_qs", np.mean(buffer_adjusted_qs))
+
+
 def run_grl_training(config, seed):
     algo = config["algo"]
     env_name = config["env_name"]
@@ -510,7 +679,21 @@ def run_grl_training(config, seed):
         vf.training = False
         config["grl_config"]["variance_fn"] = vf
         guide_policy.variance_fn = vf
-    guide_return, guide_std, guide_curric_vals = evaluate_imperfect_policy(
+
+    _, _, guide_curric_vals = evaluate_imperfect_policy(
+        guide_policy,
+        eval_env,
+        return_guide_vals=True,
+        return_episode_rewards=True,
+        n_eval_episodes=config["pretrain_eval_episodes"],
+        randomness=(
+            config["grl_config"]["guide_randomness"]
+            + (1 / config["grl_config"]["n_curriculum_stages"])
+        ),
+        curriculum_fns=CURRICULUM_FNS[config["grl_config"]["horizon_fn"]],
+    )
+
+    guide_return, guide_var, _ = evaluate_imperfect_policy(
         guide_policy,
         eval_env,
         return_guide_vals=True,
@@ -519,13 +702,13 @@ def run_grl_training(config, seed):
         randomness=config["grl_config"]["guide_randomness"],
         curriculum_fns=CURRICULUM_FNS[config["grl_config"]["horizon_fn"]],
     )
+
     # print(f"Guide return: {np.mean(guide_return)}+\-{np.mean(guide_std)}")
 
     # Patch the algo with modified functions
     SAC._sample_action = _sample_action_patch
-    # SAC.train = train_patch
+    SAC.train = train_patch
     sb3_eval.evaluate_policy = evaluate_policy_patch
-    # SAC._store_transition = _store_transition_patch
     if not config["grl_config"]["guide_in_buffer"]:
         SAC.collect_rollouts = collect_rollouts_patch
 
@@ -533,7 +716,7 @@ def run_grl_training(config, seed):
     if config["debug"]:
         project = "sb3-sac-curricula_debug"
     else:
-        project = "sb3-sac-curricula_all_envs"
+        project = "sb3-sac-curricula_guide_in_actorloss"
     run = wandb.init(
         entity="lauren-taylor-the-university-of-adelaide",
         project=project,
@@ -566,6 +749,7 @@ def run_grl_training(config, seed):
     model = SAC(
         "MlpPolicy",
         env,
+        replay_buffer_class=GRLReplayBuffer,
         stats_window_size=200,
         **config["algo_config"],
         tensorboard_log=f"./saved_models/{env_name}_{algo}_{config['seed']}",
