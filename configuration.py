@@ -27,7 +27,7 @@ paths_dict = dict(
 DEFAULT_CONFIG = {
     "eval_freq": 10000,
     "n_eval_episodes": 150,
-    "pretrain_eval_episodes": 500,
+    "pretrain_eval_episodes": 50,
     "training_steps": 1000000,
     "grl_config": {
         "horizon_fn": "variance",

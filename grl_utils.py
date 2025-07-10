@@ -116,6 +116,15 @@ def evaluate_imperfect_policy(
     n_envs = env.num_envs
     episode_rewards = []
     episode_lengths = []
+    episode_reward_map = dict(
+        zip(
+            range(env.unwrapped.envs[0].spec.max_episode_steps),
+            [
+                np.zeros(n_eval_episodes)
+                for _ in range(env.unwrapped.envs[0].spec.max_episode_steps)
+            ],
+        )
+    )
 
     episode_counts = np.zeros(n_envs, dtype="int")
     # Divides episodes among different sub environments in the vector as evenly as possible
@@ -131,17 +140,12 @@ def evaluate_imperfect_policy(
     ep_curric_vals = [0]  # initialise with dummy zero to avoid numpy empty mean warning
     curric_vals = []
     while (episode_counts < episode_count_targets).any():
-        try:
-            variance_fn = model.variance_fn
-        except AttributeError:
-            variance_fn = None
         curric_config = {
             "curriculum_stages": [],
             "time_step": current_lengths[-1],
             "curriculum_val_ep": ep_curric_vals,
             "env": env,
             "obs": observations,
-            "variance_fn": variance_fn,
         }
         _, curric_val = curriculum_fns["action_choice_fn"](curric_config)
         actions, states = model.predict(
@@ -159,6 +163,7 @@ def evaluate_imperfect_policy(
             actions = [env.action_space.sample()]
         new_observations, rewards, dones, infos = env.step(actions)
         current_rewards += rewards
+        episode_reward_map[current_lengths[0]][episode_counts[0]] += rewards[0]
         current_lengths += 1
         for i in range(n_envs):
             if episode_counts[i] < episode_count_targets[i]:
@@ -206,9 +211,11 @@ def evaluate_imperfect_policy(
         )
     if return_guide_vals:
         if return_episode_rewards:
+            # if np.all(np.array(curric_vals) == None):
+            curric_vals = episode_reward_map
             return episode_rewards, episode_lengths, curric_vals
-        guide_val = curriculum_fns["accumulator_fn"](curric_vals)
-        return mean_reward, std_reward, guide_val
+        # guide_val = curriculum_fns["accumulator_fn"](curric_vals)
+        return mean_reward, std_reward, curric_vals
     if return_episode_rewards:
         return episode_rewards, episode_lengths
     return mean_reward, std_reward
@@ -497,7 +504,6 @@ def train_patch(self, gradient_steps: int, batch_size: int = 64) -> None:
     actor_losses, critic_losses = [], []
     log_probs_actor = []
     log_probs_all = []
-    policy_means = []
     target_qs = []
     buffer_qs = []
     buffer_adjusted_qs = []
@@ -519,6 +525,7 @@ def train_patch(self, gradient_steps: int, batch_size: int = 64) -> None:
 
             pdb.set_trace()
 
+        """
         actions_taken = self.replay_buffer.to_torch(replay_data.actions)
         actions_taken_prob = torch.clip(
             self.actor.action_dist.log_prob(actions_taken), -1e4, 1e4
@@ -534,7 +541,7 @@ def train_patch(self, gradient_steps: int, batch_size: int = 64) -> None:
         log_prob = original_log_prob * torch.squeeze(
             selected_learner, 1
         ) + actions_taken_prob * torch.squeeze(selected_guide, 1)
-
+        """
         actions_pi = original_actions_pi
         log_prob = original_log_prob
         log_probs_all.append(log_prob.mean().item())
@@ -635,7 +642,7 @@ def train_patch(self, gradient_steps: int, batch_size: int = 64) -> None:
     self.logger.record("train/ent_coef", np.mean(ent_coefs))
     self.logger.record("train/actor_loss", np.mean(actor_losses))
     self.logger.record("train/critic_loss", np.mean(critic_losses))
-    self.logger.record("train/mean_policy", np.mean(policy_means))
+    # self.logger.record("train/mean_policy", np.mean(policy_means))
     if len(ent_coef_losses) > 0:
         self.logger.record("train/ent_coef_loss", np.mean(ent_coef_losses))
     self.logger.record("train/log_prob_actor", np.mean(log_probs_actor))
@@ -680,7 +687,7 @@ def run_grl_training(config, seed):
         config["grl_config"]["variance_fn"] = vf
         guide_policy.variance_fn = vf
 
-    _, _, guide_curric_vals = evaluate_imperfect_policy(
+    _, _, reward_map = evaluate_imperfect_policy(
         guide_policy,
         eval_env,
         return_guide_vals=True,
@@ -692,14 +699,16 @@ def run_grl_training(config, seed):
         ),
         curriculum_fns=CURRICULUM_FNS[config["grl_config"]["horizon_fn"]],
     )
-
-    guide_return, guide_var, _ = evaluate_imperfect_policy(
+    guide_return, guide_var, guide_curric_vals = evaluate_imperfect_policy(
         guide_policy,
         eval_env,
         return_guide_vals=True,
-        return_episode_rewards=True,
+        return_episode_rewards=False,
         n_eval_episodes=config["pretrain_eval_episodes"],
-        randomness=config["grl_config"]["guide_randomness"],
+        randomness=(
+            config["grl_config"]["guide_randomness"]
+            + (1 / config["grl_config"]["n_curriculum_stages"])
+        ),
         curriculum_fns=CURRICULUM_FNS[config["grl_config"]["horizon_fn"]],
     )
 
@@ -750,6 +759,7 @@ def run_grl_training(config, seed):
         "MlpPolicy",
         env,
         replay_buffer_class=GRLReplayBuffer,
+        replay_buffer_kwargs={"curric_vals": reward_map},
         stats_window_size=200,
         **config["algo_config"],
         tensorboard_log=f"./saved_models/{env_name}_{algo}_{config['seed']}",

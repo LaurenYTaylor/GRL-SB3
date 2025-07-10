@@ -28,6 +28,7 @@ def max_to_min_curriculum(guide_vals, n_curriculum_stages):
     curric = np.percentile(
         guide_vals, np.linspace(100 - 100 / n_curriculum_stages, 0, n_curriculum_stages)
     )
+    print(curric)
     return curric
 
 
