@@ -11,16 +11,16 @@ import torch
 
 env_names = [
     # "AntMaze_UMaze-v2",
-    "AdroitHandPen-v1",
+    # "AdroitHandPen-v1",
     "AdroitHandHammer-v1",
-    "AdroitHandRelocate-v1",
-    "AdroitHandDoor-v1",
-    "Pusher-v5",
-    "InvertedDoublePendulum-v5",
-    "Hopper-v5",
+    # "AdroitHandRelocate-v1",
+    # "AdroitHandDoor-v1",
+    # "Pusher-v5",
+    # "InvertedDoublePendulum-v5",
+    # "Hopper-v5",
 ]
 training_steps = 1000000
-episodes = 200
+episodes = 1
 for e_i, env_name in enumerate(env_names):
     # if e_i != 2:
     # continue
@@ -42,17 +42,17 @@ for e_i, env_name in enumerate(env_names):
     )
     for episode in range(episodes):
         done = False
-        obs, infos = env.reset()
+        obs, infos = env.reset(seed=0)
         steps = 0
         total_reward = 0
         success_flag = False
         while not done:
-            action = env.action_space.sample()
+            # action = env.action_space.sample()
             if np.random.random() < 1.0:
                 action = guide_policy.predict(obs)[0]
             obs, reward, term, trunc, info = env.step(action)
             total_reward += reward
-            step_rewards[steps][episode] = total_reward
+            step_rewards[steps][episode] = reward
             # distance = adroit_relocate(obs, env)
             # success = info.get("is_success", False)
             # success = False
@@ -70,6 +70,7 @@ for e_i, env_name in enumerate(env_names):
         print(f"Episode {episode + 1} finished with total reward: {total_reward}")
     env.close()
 
+    print(step_rewards)
     step_means = []
     for k, v in step_rewards.items():
         step_means.append(np.array(v))

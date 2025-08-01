@@ -143,16 +143,16 @@ def agent_type_action_choice(config):
     use_learner = False
     # check if threshold will be exceeded if the learner is chosen to be used
     if_learner_used = config["curriculum_val_ep"][:]
-    if_learner_used.append(1.0)
-    curriculum_val_ep = np.mean(if_learner_used)
+    # if_learner_used.append(1.0)
+    np.mean(if_learner_used)
 
     if len(config["curriculum_stages"]) == 0:
         return False, 0.0
-    if curriculum_val_ep <= config["curriculum_stages"][config["curriculum_stage_idx"]]:
-        use_learner = (
-            np.random.sample()
-            < config["curriculum_stages"][config["curriculum_stage_idx"]]
-        )
+    # if curriculum_val_ep <= config["curriculum_stages"][config["curriculum_stage_idx"]]:
+    use_learner = (
+        np.random.sample() < config["curriculum_stages"][config["curriculum_stage_idx"]]
+    )
+
     return use_learner, float(use_learner)
 
 

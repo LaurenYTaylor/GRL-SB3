@@ -124,7 +124,7 @@ class ModifiedEvalCallback(EvalCallback):
             )
             self.logger.dump(self.num_timesteps)
 
-            if mean_reward > self.best_mean_reward:
+            if self.model._n_updates > 0 and mean_reward > self.best_mean_reward:
                 if self.verbose >= 1:
                     print("New best mean reward!")
                 if self.best_model_save_path is not None:
@@ -171,8 +171,8 @@ class CurriculumMgmtCallback(BaseCallback):
         self.model.rolling_mean_n = self.curriculum_config["rolling_mean_n"]
         self.model.tolerance = self.curriculum_config["tolerance"]
         self.model.guide_curriculum_val = self.guide_curriculum_val
-        self.model.guide_in_buffer = self.curriculum_config["guide_in_buffer"]
         self.model.horizon_fn = self.curriculum_config["horizon_fn"]
+        self.model.grl_buffer = self.curriculum_config["grl_buffer"]
         self.model.learner_or_guide_action = CURRICULUM_FNS[
             self.curriculum_config["horizon_fn"]
         ]["action_choice_fn"]
@@ -197,14 +197,24 @@ class CurriculumMgmtCallback(BaseCallback):
         self.model.ep_timestep = 0
 
     def _on_step(self) -> bool:
-        self.locals["replay_buffer"].add_grl_specific(
-            {
-                "used_learner": self.model.last_use_learner,
-                "time_step": self.model.ep_timestep,
-            }
-        )
+        if self.model.grl_buffer:
+            self.locals["replay_buffer"].add_grl_specific(
+                {
+                    "used_learner": self.model.last_use_learner,
+                    "time_step": self.model.ep_timestep,
+                    "noiseless_action": self.model.noiseless_action,
+                }
+            )
         done = self.locals["dones"][-1]
+
         if done:
+            if (
+                np.mean(self.model.ep_curriculum_values) == 0
+                and self.model.curriculum_stage_idx > 5
+            ):
+                import pdb
+
+                pdb.set_trace()
             self.logger.record(
                 "train/ep_curriculum_val", np.mean(self.model.ep_curriculum_values)
             )
@@ -234,10 +244,15 @@ class CurriculumStageUpdateCallback(BaseCallback):
     def _on_step(self) -> bool:
         if not hasattr(self, "best_eval_return"):
             self.best_eval_return = self.parent.model.guide_return
-
-        prev_best = (
-            self.best_eval_return - self.parent.model.tolerance * self.best_eval_return
+        # import pdb;pdb.set_trace()
+        N = 5
+        n = -10
+        prev_best = np.clip(
+            self.best_eval_return - self.parent.model.tolerance * (N - n), n, N
         )
+        # prev_best = (
+        #    self.best_eval_return - self.parent.model.tolerance * self.best_eval_return
+        # )
         if len(self.parent.rolling_n_returns) == self.parent.model.rolling_mean_n:
             tune.report({"eval_return": self.parent.last_mean_reward})
             if np.mean(
@@ -248,6 +263,9 @@ class CurriculumStageUpdateCallback(BaseCallback):
                 self.parent.model.curriculum_stage_idx += 1
                 if self.parent.rolling_n_returns[-1] > self.best_eval_return:
                     self.best_eval_return = self.parent.rolling_n_returns[-1]
+                self.parent.model.replay_buffer.learner_frac = (
+                    self.parent.model.curriculum_stage_idx + 1
+                ) / len(self.parent.model.curriculum_stages)
             self.parent.logger.record(
                 "eval/eval_rolling_mean", np.mean(self.parent.rolling_n_returns)
             )
