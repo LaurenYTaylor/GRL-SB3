@@ -3,6 +3,15 @@ import copy
 from stable_baselines3.common.noise import ActionNoise
 import numpy as np
 from numpy.typing import DTypeLike
+from GRLReplayBuffer import GRLReplayBuffer
+from deepmerge import Merger
+
+# Define the merge strategy
+merger = Merger(
+    [(dict, ["merge"])],  # merge dictionaries recursively
+    ["override"],
+    ["override"],  # fallback strategy
+)
 
 
 class NormalActionNoise(ActionNoise):
@@ -64,12 +73,19 @@ paths_dict["CombinationLock-v1"] = (
 algorithm_dict = dict(zip(env_names, algorithms))
 
 DEFAULT_CONFIG = {
-    "eval_freq": 3000,
-    "n_eval_episodes": 150,
+    "env_name": "AdroitHandHammer-v1",
+    "eval_freq": 10000,
+    "n_eval_episodes": 500,
     "pretrain_eval_episodes": 500,
     "training_steps": 50000,
+    "seed": 0,
+    "debug": False,
+    "tune": False,
+    "multirun": False,
+    "save_model_path": None,  # replace with desired path
+    "tensorboard_log": None,  # replace with desired path
     "grl_config": {
-        "horizon_fn": "time_step",
+        "horizon_fn": "agent_type",
         "n_curriculum_stages": 10,
         "variance_fn": None,
         "rolling_mean_n": 1,
@@ -77,26 +93,40 @@ DEFAULT_CONFIG = {
         "guide_randomness": 0.0,
         "exp_time_step_coeff": 0.001,
         "grl_buffer": True,
+        "delay_training": True,
+        "guide_in_actor_loss": False,
     },
     "algo_config": {
-        "buffer_size": 10000,
-        "batch_size": 256,
+        "buffer_size": 100000,
+        "batch_size": 128,
         "learning_starts": 0,
         "train_freq": 1,
         "gradient_steps": 1,
-        "learning_rate": 0.0005,
-        "action_noise": NormalActionNoise(mean=0.0, sigma=1.5),
-        # "target_policy_noise": 0.05
+        "learning_rate": 0.00005,
+        "action_noise": NormalActionNoise(mean=0.0, sigma=0.5),
+        "replay_buffer_class": "GRLReplayBuffer",
+        "replay_buffer_kwargs": {"perc_guide_sampled": ("cs", "cs")},
     },
 }
 
 
-def get_config(env_name, horizon_fn, grl_buffer, debug):
+# def get_config(env_name, horizon_fn, grl_buffer, debug):
+def get_config(**kwargs):
     config = copy.deepcopy(DEFAULT_CONFIG)
-    config["algo"] = algorithm_dict.get(env_name, "SAC")
-    config["env_name"] = env_name
-    config["pretrained_path"] = paths_dict[env_name]
-    config["grl_config"]["horizon_fn"] = horizon_fn
-    config["grl_config"]["grl_buffer"] = grl_buffer
-    config["debug"] = debug
+    config = merger.merge(config, kwargs)
+    config["pretrained_path"] = paths_dict[config["env_name"]]
+    config["algo"] = algorithm_dict.get(config["env_name"], "SAC")
+    # config["grl_config"]["guide_randomness"] = config["grl_config"]["guide_randomness"] + (1 / config["grl_config"]["n_curriculum_stages"])
+    debug, tune = "", ""
+    if config["debug"]:
+        debug = "-debug"
+    if config["tune"]:
+        tune = "-tune"
+    config["project_name"] = f"sb3-TD3{debug}{tune}"
+    config["log_path"] = (
+        f"./saved_models/{config['env_name']}_{config['algo']}_{config['seed']}"
+    )
+    config["algo_config"]["replay_buffer_class"] = globals()[
+        config["algo_config"]["replay_buffer_class"]
+    ]
     return config

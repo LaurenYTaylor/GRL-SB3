@@ -1,5 +1,4 @@
 import gymnasium
-import torch
 from stable_baselines3 import TD3, SAC
 import os
 import numpy as np

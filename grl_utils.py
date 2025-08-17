@@ -36,10 +36,8 @@ from experimental_utils import (
     collect_rollouts_patch,
 )
 from grl_train_patches import (
-    train_td3_patch,
     train_simple_td3_patch,
 )
-from GRLReplayBuffer import GRLReplayBuffer, GRLSimpleReplayBuffer
 import torch as th
 from torch.nn import functional as F
 from stable_baselines3.common.utils import polyak_update
@@ -47,35 +45,20 @@ from stable_baselines3.common.utils import polyak_update
 MODELS = {"SAC": SAC, "PPO": PPO}
 
 
-def evaluate_imperfect_policy(
+def evaluate_guide_policy(
     model: "type_aliases.PolicyPredictor",
     env: Union[gym.Env, VecEnv],
+    action_choice_fn: Callable,
     n_eval_episodes: int = 10,
     deterministic: bool = True,
     render: bool = False,
     callback: Optional[Callable[[dict[str, Any], dict[str, Any]], None]] = None,
     reward_threshold: Optional[float] = None,
-    return_episode_rewards: bool = False,
-    return_guide_vals: bool = False,
     warn: bool = True,
     randomness: float = 0.0,
-    curriculum_fns: dict = None,
 ) -> Union[tuple[float, float], tuple[list[float], list[int]]]:
     """
-    Runs the policy for ``n_eval_episodes`` episodes and outputs the average return
-    per episode (sum of undiscounted rewards).
-    If a vector env is passed in, this divides the episodes to evaluate onto the
-    different elements of the vector env. This static division of work is done to
-    remove bias. See https://github.com/DLR-RM/stable-baselines3/issues/402 for more
-    details and discussion.
-
-    .. note::
-        If environment has not been wrapped with ``Monitor`` wrapper, reward and
-        episode lengths are counted as it appears with ``env.step`` calls. If
-        the environment contains wrappers that modify rewards or episode lengths
-        (e.g. reward scaling, early episode reset), these will affect the evaluation
-        results as well. You can avoid this by wrapping environment with ``Monitor``
-        wrapper before anything else.
+    Runs the policy for ``n_eval_episodes`` episodes
 
     :param model: The RL agent you want to evaluate. This can be any object
         that implements a ``predict`` method, such as an RL algorithm (``BaseAlgorithm``)
@@ -90,14 +73,9 @@ def evaluate_imperfect_policy(
         See https://github.com/DLR-RM/stable-baselines3/issues/1912 for more details.
     :param reward_threshold: Minimum expected reward per episode,
         this will raise an error if the performance is not met
-    :param return_episode_rewards: If True, a list of rewards and episode lengths
-        per episode will be returned instead of the mean.
     :param warn: If True (default), warns user about lack of a Monitor wrapper in the
         evaluation environment.
-    :return: Mean return per episode (sum of rewards), std of reward per episode.
-        Returns (list[float], list[int]) when ``return_episode_rewards`` is True, first
-        list containing per-episode return and second containing per-episode lengths
-        (in number of steps).
+    :return: Returns, curriculum values and episode-to-reward map
     """
     is_monitor_wrapped = False
     # Avoid circular import
@@ -152,7 +130,7 @@ def evaluate_imperfect_policy(
             "env": env,
             "obs": observations,
         }
-        _, curric_val = curriculum_fns["action_choice_fn"](curric_config)
+        _, curric_val = action_choice_fn(curric_config)
         actions, states = model.predict(
             observations,  # type: ignore[arg-type]
             state=states,
@@ -184,13 +162,7 @@ def evaluate_imperfect_policy(
 
                 if dones[i]:
                     if is_monitor_wrapped:
-                        # Atari wrapper can send a "done" signal when
-                        # the agent loses a life, but it does not correspond
-                        # to the true end of episode
                         if "episode" in info.keys():
-                            # Do not trust "done" with episode endings.
-                            # Monitor wrapper includes "episode" key in info if environment
-                            # has been wrapped with it. Use those rewards instead.
                             episode_rewards.append(info["episode"]["r"])
                             episode_lengths.append(info["episode"]["l"])
                             # Only increment at the real end of an episode
@@ -215,16 +187,8 @@ def evaluate_imperfect_policy(
             "Mean reward below threshold: "
             f"{mean_reward:.2f} < {reward_threshold:.2f}"
         )
-    if return_guide_vals:
-        if return_episode_rewards:
-            # if np.all(np.array(curric_vals) == None):
-            curric_vals = episode_reward_map
-            return episode_rewards, episode_lengths, curric_vals
-        # guide_val = curriculum_fns["accumulator_fn"](curric_vals)
-        return mean_reward, std_reward, curric_vals
-    if return_episode_rewards:
-        return episode_rewards, episode_lengths
-    return mean_reward, std_reward
+
+    return episode_rewards, curric_vals, episode_reward_map
 
 
 def evaluate_policy_patch(
@@ -452,6 +416,9 @@ def _sample_action_patch(
         # We use non-deterministic action in the case of SAC, for TD3, it does not matter
         assert self._last_obs is not None, "self._last_obs was not set"
         if self.curriculum_stage_idx == len(self.curriculum_stages) - 1:
+            use_learner, self.curriculum_val_t = self.learner_or_guide_action(
+                choice_config
+            )
             use_learner = True
         else:
             use_learner, self.curriculum_val_t = self.learner_or_guide_action(
@@ -468,6 +435,8 @@ def _sample_action_patch(
             unscaled_action, _ = self.guide_policy.predict(
                 self._last_obs, deterministic=True
             )
+            scaled_action_noiseless = self.policy.scale_action(unscaled_action)
+            scaled_action = np.clip(scaled_action_noiseless, -1, 1)
 
     # Rescale the action from [low, high] to [-1, 1]
     if isinstance(self.action_space, spaces.Box):
@@ -477,6 +446,7 @@ def _sample_action_patch(
         if action_noise is not None and use_learner:
             scaled_action = np.clip(scaled_action_noiseless + action_noise(), -1, 1)
         else:
+            scaled_action = np.clip(scaled_action_noiseless, -1, 1)
             scaled_action = scaled_action_noiseless
 
         # We store the scaled action in the buffer
@@ -488,146 +458,116 @@ def _sample_action_patch(
         action = buffer_action
     self.last_use_learner = use_learner
     self.noiseless_action = scaled_action_noiseless
+
     return action, buffer_action
 
 
-def run_grl_training(config, seed):
+def set_variance_fn(env, env_name, guide_policy):
+    n_updates = 10000
+    var_path = os.getcwd() + f"/variance_fns/var_functions/{env_name}_{n_updates}_vf.pt"
+    obs_dim = env.observation_space.shape[0]
+    action_dim = env.action_space.shape[0]
+    vf = StateDepFunction(obs_dim)
+    try:
+        vf.load_state_dict(torch.load(var_path))
+        variance_learner = VarianceLearner(obs_dim, action_dim, None, None)
+        variance_learner.vf = vf
+    except FileNotFoundError:
+        variance_learner = VarianceLearner(obs_dim, action_dim, 0.05, guide_policy)
+        vf = variance_learner.run_training(env, n_updates=n_updates, evaluate=True)
+    vf.training = False
+    return vf
+
+
+def run_grl_training(config):
     algo = config["algo"]
     env_name = config["env_name"]
     pretrained_path = config["pretrained_path"]
+    curric_fn = CURRICULUM_FNS[config["grl_config"]["horizon_fn"]]
+    config["algo_config"][
+        "tensorboard_log"
+    ] = f"./saved_models/{env_name}_{algo}_{config['seed']}"
+
     if config["grl_config"]["n_curriculum_stages"] == 0:
         assert (
             config["grl_config"]["horizon_fn"] == "agent_type"
         ), "If n_curriculum_stages=0 (run guide only), the horizon function must be agent_type"
-    config["seed"] = seed
+
     env = gym.make(env_name)
     eval_env = gym.make(env_name)
-    if "train_freq" in config:
-        config["gradient_steps"] = config["train_freq"]
+
     # Evaluate the guide policy
     guide_policy = MODELS[algo].load(pretrained_path)
 
     if config["grl_config"]["horizon_fn"] == "variance":
-        n_updates = 10000
-        var_path = (
-            os.getcwd() + f"/variance_fns/var_functions/{env_name}_{n_updates}_vf.pt"
-        )
-        obs_dim = env.observation_space.shape[0]
-        action_dim = env.action_space.shape[0]
-        vf = StateDepFunction(obs_dim)
-        try:
-            vf.load_state_dict(torch.load(var_path))
-            variance_learner = VarianceLearner(obs_dim, action_dim, None, None)
-            variance_learner.vf = vf
-        except FileNotFoundError:
-            variance_learner = VarianceLearner(obs_dim, action_dim, 0.05, guide_policy)
-            vf = variance_learner.run_training(env, n_updates=n_updates, evaluate=True)
-        vf.training = False
+        vf = set_variance_fn(env, env_name, guide_policy)
         config["grl_config"]["variance_fn"] = vf
         guide_policy.variance_fn = vf
-
-    _, _, reward_map = evaluate_imperfect_policy(
+    guide_episode_rewards, guide_curric_vals, guide_reward_map = evaluate_guide_policy(
         guide_policy,
         eval_env,
-        return_guide_vals=True,
-        return_episode_rewards=True,
+        curric_fn["action_choice_fn"],
         n_eval_episodes=config["pretrain_eval_episodes"],
-        randomness=(
-            config["grl_config"]["guide_randomness"]
-            + (1 / config["grl_config"]["n_curriculum_stages"])
-        ),
-        curriculum_fns=CURRICULUM_FNS[config["grl_config"]["horizon_fn"]],
+        randomness=(config["grl_config"]["guide_randomness"]),
     )
-    guide_return, guide_var, guide_curric_vals = evaluate_imperfect_policy(
-        guide_policy,
-        eval_env,
-        return_guide_vals=True,
-        return_episode_rewards=False,
-        n_eval_episodes=config["pretrain_eval_episodes"],
-        randomness=(
-            config["grl_config"]["guide_randomness"]
-            + (1 / config["grl_config"]["n_curriculum_stages"])
-        ),
-        curriculum_fns=CURRICULUM_FNS[config["grl_config"]["horizon_fn"]],
-    )
+    guide_return = np.mean(guide_episode_rewards)
 
     # Patch the algo with modified functions
     TD3._sample_action = _sample_action_patch
-    # SAC.train = train_patch
     TD3.train = train_simple_td3_patch
     sb3_eval.evaluate_policy = evaluate_policy_patch
 
     # Set up the model callbacks
-    if config["debug"]:
-        project = "sb3-sac-curricula_debug"
-    else:
-        project = "sb3-sac-curricula_guide_in_actorloss"
     run = wandb.init(
         entity="lauren-taylor-the-university-of-adelaide",
-        project=project,
+        project=config["project_name"],
         sync_tensorboard=True,
         monitor_gym=True,
         config=config,
         save_code=False,
     )
-    wandb_cb = WandbCallback(
-        gradient_save_freq=10000,
-        # model_save_path=f"saved_models/{env_name}_{algo}_{config['seed']}",
-        verbose=2,
-    )
-    curriculum_mgmt_cb = CurriculumMgmtCallback(
-        guide_policy, np.mean(guide_return), guide_curric_vals, config["grl_config"]
-    )
-    curriculum_update_cb = CurriculumStageUpdateCallback()
-    eval_cb = ModifiedEvalCallback(
-        eval_env,
-        best_model_save_path=f"./saved_models/{env_name}_{algo}_{config['seed']}",
-        log_path=f"./saved_models/{env_name}_{algo}_{config['seed']}",
-        eval_freq=config["eval_freq"],
-        n_eval_episodes=config["n_eval_episodes"],
-        deterministic=True,
-        render=False,
-        callback_after_eval=curriculum_update_cb,
-    )
 
-    sac_kwargs = {
-        "stats_window_size": 100,
-        **config["algo_config"],
-        "tensorboard_log": f"./saved_models/{env_name}_{algo}_{config['seed']}",
-        "verbose": 1,
-    }
-    if config["grl_config"]["grl_buffer"]:
-        sac_kwargs["replay_buffer_class"] = GRLReplayBuffer
-        sac_kwargs["replay_buffer_kwargs"] = {"curric_vals": reward_map}
+    callbacks = [
+        WandbCallback(
+            gradient_save_freq=10000,
+            model_save_path=config["save_model_path"],
+            verbose=2,
+        ),
+        CurriculumMgmtCallback(
+            guide_policy, np.mean(guide_return), guide_curric_vals, config["grl_config"]
+        ),
+        ModifiedEvalCallback(
+            eval_env,
+            best_model_save_path=config["algo_config"]["tensorboard_log"],
+            log_path=config["algo_config"]["tensorboard_log"],
+            eval_freq=config["eval_freq"],
+            n_eval_episodes=config["n_eval_episodes"],
+            callback_after_eval=CurriculumStageUpdateCallback(),
+        ),
+    ]
 
-    # Create the model
-    model = TD3("MlpPolicy", env, **sac_kwargs)
-
-    # Train
-    model.learn(
-        total_timesteps=config["training_steps"],
-        callback=[wandb_cb, curriculum_mgmt_cb, eval_cb],
-        log_interval=5,
-    )
-
+    algo_config = config["algo_config"]
+    if config["grl_config"]["grl_buffer"] is not None:
+        algo_config["replay_buffer_kwargs"]["curric_vals"] = guide_reward_map
+    # Train the model
+    model = TD3("MlpPolicy", env, seed=config["seed"], **algo_config)
+    model.learn(total_timesteps=config["training_steps"], callback=callbacks)
     run.finish()
 
 
 @ray.remote(num_gpus=0)
-def ray_grl_training(config, seed):
-    run_grl_training(config, seed)
+def ray_grl_training(config):
+    run_grl_training(config)
 
 
 def hyperparam_training(hyperparam_config):
-    hyperparam_config["eval_freq"] = tune.choice([5000, 10000, 20000])
-    hyperparam_config["n_eval_episodes"] = tune.choice([100, 250, 500])
-    hyperparam_config["grl_config"]["n_curriculum_stages"] = tune.choice([15, 20, 25])
-    hyperparam_config["grl_config"]["tolerance"] = tune.uniform(0.05, 0.2)
-
-    # hyperparam_config["algo_config"]["buffer_size"] = tune.choice([100000, 1000000])
-    # hyperparam_config["learning_rate"] = tune.loguniform(1e-7, 1e-5)
-    # hyperparam_config["tau"] = tune.loguniform(1e-4, 1e-2)
-    # hyperparam_config["train_freq"] = tune.choice([32, 64, 128])
+    hyperparam_config["eval_freq"] = tune.choice([2500, 5000, 7500])
+    hyperparam_config["n_eval_episodes"] = tune.choice([50, 200])
+    hyperparam_config["grl_config"]["n_curriculum_stages"] = tune.choice([5, 10, 20])
+    hyperparam_config["algo_config"]["batch_size"] = tune.choice([64, 128, 256])
+    hyperparam_config["algo_config"]["train_freq"] = tune.choice([1, 16, 32])
+    hyperparam_config["algo_config"]["gradient_steps"] = tune.choice([1, 16, 32])
+    hyperparam_config["algo_config"]["learning_rate"] = tune.uniform(0.0001, 0.001)
 
     tuner = tune.Tuner(
         run_grl_training,

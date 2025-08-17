@@ -195,6 +195,8 @@ class CurriculumMgmtCallback(BaseCallback):
         self.model.curriculum_stage_idx = 0
         self.model.ep_curriculum_values = [self.model.curriculum_val_t]
         self.model.ep_timestep = 0
+        self.model.guide_in_actor_loss = self.curriculum_config["guide_in_actor_loss"]
+        self.model.delay_training = self.curriculum_config["delay_training"]
 
     def _on_step(self) -> bool:
         if self.model.grl_buffer:
@@ -208,13 +210,6 @@ class CurriculumMgmtCallback(BaseCallback):
         done = self.locals["dones"][-1]
 
         if done:
-            if (
-                np.mean(self.model.ep_curriculum_values) == 0
-                and self.model.curriculum_stage_idx > 5
-            ):
-                import pdb
-
-                pdb.set_trace()
             self.logger.record(
                 "train/ep_curriculum_val", np.mean(self.model.ep_curriculum_values)
             )

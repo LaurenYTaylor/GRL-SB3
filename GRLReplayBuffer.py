@@ -75,80 +75,6 @@ class GRLSimpleReplayBufferSamples(NamedTuple):
     noiseless_actions: th.Tensor
 
 
-class GRLSimpleReplayBuffer(ReplayBuffer):
-    """
-    Extended Replay Buffer that allows for additional functionality.
-    Inherits from Stable Baselines3's ReplayBuffer.
-    """
-
-    def __init__(
-        self,
-        buffer_size: int,
-        observation_space: spaces.Space,
-        action_space: spaces.Space,
-        device: Union[th.device, str] = "auto",
-        n_envs: int = 1,
-        optimize_memory_usage: bool = False,
-        handle_timeout_termination: bool = True,
-        curric_vals: dict = None,
-    ):
-        super().__init__(
-            buffer_size,
-            observation_space,
-            action_space,
-            device,
-            n_envs,
-            optimize_memory_usage,
-            handle_timeout_termination,
-        )
-        self.used_learner = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
-        self.time_step = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
-        self.noiseless_actions = np.zeros(
-            (self.buffer_size, self.n_envs, self.action_dim),
-            dtype=self._maybe_cast_dtype(action_space.dtype),
-        )
-
-    def add_grl_specific(self, grl_info: dict) -> None:
-        self.time_step[self.pos] = grl_info.get("time_step", 0)
-        self.used_learner[self.pos] = grl_info.get("used_learner", 0)
-        self.noiseless_actions[self.pos] = grl_info.get("noiseless_action", None)
-
-    def _get_samples(
-        self, batch_inds: np.ndarray, env: Optional[VecNormalize] = None
-    ) -> GRLSimpleReplayBufferSamples:
-        # Sample randomly the env idx
-        env_indices = np.random.randint(0, high=self.n_envs, size=(len(batch_inds),))
-
-        if self.optimize_memory_usage:
-            next_obs = self._normalize_obs(
-                self.observations[(batch_inds + 1) % self.buffer_size, env_indices, :],
-                env,
-            )
-        else:
-            next_obs = self._normalize_obs(
-                self.next_observations[batch_inds, env_indices, :], env
-            )
-
-        data = (
-            self._normalize_obs(self.observations[batch_inds, env_indices, :], env),
-            self.actions[batch_inds, env_indices, :],
-            next_obs,
-            # Only use dones that are not due to timeouts
-            # deactivated by default (timeouts is initialized as an array of False)
-            (
-                self.dones[batch_inds, env_indices]
-                * (1 - self.timeouts[batch_inds, env_indices])
-            ).reshape(-1, 1),
-            self._normalize_reward(
-                self.rewards[batch_inds, env_indices].reshape(-1, 1), env
-            ),
-            self.time_step[batch_inds, env_indices].reshape(-1, 1),
-            self.used_learner[batch_inds, env_indices].reshape(-1, 1),
-            self.noiseless_actions[batch_inds, env_indices, :],
-        )
-        return GRLSimpleReplayBufferSamples(*tuple(map(self.to_torch, data)))
-
-
 class GRLReplayBuffer(ReplayBuffer):
     """
     Extended Replay Buffer that allows for additional functionality.
@@ -165,6 +91,10 @@ class GRLReplayBuffer(ReplayBuffer):
         optimize_memory_usage: bool = False,
         handle_timeout_termination: bool = True,
         curric_vals: dict = None,
+        perc_guide_sampled: list[Union[float, str, None], Union[float, str, None]] = [
+            None,
+            None,
+        ],
     ):
         super().__init__(
             buffer_size,
@@ -218,6 +148,7 @@ class GRLReplayBuffer(ReplayBuffer):
         self.guide_pos = 0
         self.guide_size = 0
         self.learner_frac = 0.1
+        self.perc_guide_sampled = perc_guide_sampled
 
     def add(
         self,
@@ -274,12 +205,13 @@ class GRLReplayBuffer(ReplayBuffer):
 
     def add_grl_specific(self, grl_info: dict) -> None:
         self.recent_used_learner = grl_info.get("used_learner", 0)
+
         if self.recent_used_learner:
             self.used_learner[self.pos] = 1.0
             self.time_step[self.pos] = grl_info.get("time_step", 0)
             self.noiseless_actions[self.pos] = grl_info.get("noiseless_action", None)
         else:
-            self.guide_used_learner[self.pos] = 0.0
+            self.guide_used_learner[self.guide_pos] = 0.0
             self.guide_timestep[self.guide_pos] = grl_info.get("time_step", 0)
             self.guide_noiseless_actions[self.guide_pos] = grl_info.get(
                 "noiseless_action", None
@@ -294,36 +226,32 @@ class GRLReplayBuffer(ReplayBuffer):
         """
         guide_upper_bound = self.buffer_size if self.guide_full else self.guide_pos
         learner_upper_bound = self.buffer_size if self.full else self.pos
+        lower_samp, upper_samp = self.perc_guide_sampled
+        if upper_samp == "cs":
+            if lower_samp == "cs":
+                guide_batch_n = int((1 - self.learner_frac) * batch_size)
+            else:
+                guide_batch_n = min(
+                    int((1 - lower_samp) * batch_size),
+                    int((1 - self.learner_frac) * batch_size),
+                )
+        elif isinstance(upper_samp, float) or isinstance(upper_samp, int):
+            guide_batch_n = int((1 - lower_samp) * batch_size)
 
         if self.pos == 0 and not self.full:
             guide_batch_n = batch_size
         elif self.guide_pos == 0 and not self.guide_full:
             guide_batch_n = 0
-        else:
-            guide_batch_n = int((1 - self.learner_frac) * batch_size)
 
-        guide_batch_n = min(
-            int((1 - 0.5) * batch_size), int((1 - self.learner_frac) * batch_size)
-        )
-        print(
-            f"{guide_batch_n}, {int((1-0.5) * batch_size)}, Learner frac batch size: {int((1-self.learner_frac) * batch_size)}"
-        )
-        # if guide_batch_n != 0:
-        #     guide_samp_ts = self.guide_timestep[:guide_upper_bound].astype("int64")
-        #     guide_samp_logits = np.take(self.reward_diffs, guide_samp_ts)
-        #     #guide_samp_logits = np.ones(guide_samp_ts.shape)
-        #     guide_samp_probs = softmax_with_temperature(
-        #         guide_samp_logits, temperature=100000
-        #     )
         guide_inds = np.array([])
         learner_inds = np.array([])
 
         if guide_batch_n < batch_size:
-            learner_samp_ts = self.time_step[:learner_upper_bound].astype("int64")
-            learner_samp_logits = np.take(self.reward_diffs, learner_samp_ts)
-            learner_samp_probs = softmax_with_temperature(
-                learner_samp_logits, temperature=10000
-            )
+            # learner_samp_ts = self.time_step[:learner_upper_bound].astype("int64")
+            # learner_samp_logits = np.take(self.reward_diffs, learner_samp_ts)
+            # learner_samp_probs = softmax_with_temperature(
+            #    learner_samp_logits, temperature=10000
+            # )
             learner_inds = np.random.choice(
                 list(range(learner_upper_bound)),
                 size=batch_size - guide_batch_n,
@@ -335,34 +263,13 @@ class GRLReplayBuffer(ReplayBuffer):
             ##dists = np.sum(diff**2, axis=-1)
             # Find the nearest guide index for each learner observation
             # guide_inds = np.argmin(dists, axis=1).flatten()
+
             guide_inds = np.random.choice(
                 list(range(guide_upper_bound)),
                 size=guide_batch_n,
                 replace=True,
                 # p=learner_samp_probs.flatten(),
             )
-
-        #       #
-        # if guide_batch_n > 0:
-        #     guide_inds = np.random.choice(
-        #         list(range(guide_upper_bound)),
-        #         size=int((1-self.learner_frac) * batch_size),
-        #         replace=True,
-        #         #p=guide_samp_probs.flatten(),
-        #     )
-        #     self.guide_weights = ((1/len(self.reward_diffs))*(1/np.take(guide_samp_probs, guide_inds)))**1
-
-        # if self.full:
-        #     learner_inds = (
-        #         np.random.randint(
-        #             1, self.buffer_size, size=batch_size - guide_batch_n
-        #         )
-        #         + self.pos
-        #     ) % self.buffer_size
-        # else:
-        #     learner_inds = np.random.randint(
-        #         0, self.pos, size=batch_size - guide_batch_n
-        #     )
 
         return self._get_samples(learner_inds, guide_inds, env=env)
 
@@ -454,11 +361,12 @@ class GRLReplayBuffer(ReplayBuffer):
 
         guide_data = self._get_guide_samples(guide_inds, env)
         learner_data = self._get_learner_samples(learner_inds, env)
-
         data = {}
+
         for i, k in enumerate(guide_data._asdict().keys()):
             data[k] = torch.concat((guide_data._asdict()[k], learner_data._asdict()[k]))
             if i == 0:
                 idx = torch.randperm(len(data[k]))
             data[k] = data[k][idx]
+
         return GRLReplayBufferSamples(*tuple(map(self.to_torch, tuple(data.values()))))

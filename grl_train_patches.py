@@ -6,180 +6,83 @@ from torch.nn import functional as F
 from stable_baselines3.common.utils import polyak_update
 
 
-def train_td3_patch(self, gradient_steps: int, batch_size: int = 100) -> None:
-    # Switch to train mode (this affects batch norm / dropout)
-    self.policy.set_training_mode(True)
+def find_mean_actions(replay_data, learner_inds, guide_inds, q_vals, logger):
+    replay_obs = replay_data.observations
+    replay_acts = replay_data.actions
+    obs = torch.tensor(
+        [-1.0] * 5,
+        device=replay_obs.device,
+        dtype=replay_obs.dtype,
+    )
+    j = 0
+    for i in range(-1, 5):
+        if i > -1:
+            obs[i] = i
+        rel_idxs = torch.argwhere(torch.all(replay_obs == obs, dim=-1))
+        if len(rel_idxs) == 0:
+            continue
 
-    # Update learning rate according to lr schedule
-    self._update_learning_rate([self.actor.optimizer, self.critic.optimizer])
+        learner_acts = replay_acts[rel_idxs[torch.isin(rel_idxs, learner_inds)[:, 0]]]
+        learner_rews = replay_data.rewards[
+            rel_idxs[torch.isin(rel_idxs, learner_inds)[:, 0]]
+        ]
+        learner_qs = q_vals[rel_idxs[torch.isin(rel_idxs, learner_inds)[:, 0]]]
+        mean_learner_acts = torch.mean(learner_acts, dim=0)
+        mean_learner_qs = torch.mean(learner_qs, dim=0)
 
-    actor_losses, critic_losses = [], []
-    guide_q_values, learner_q_values = [], []
-    used_learner = []
-    guide_q_dict = np.zeros(200, dtype=float)
-    learner_q_dict = np.zeros(200, dtype=float)
-    for _ in range(gradient_steps):
-        self._n_updates += 1
-        # Sample replay buffer
-        replay_data = self.replay_buffer.sample(batch_size, env=self._vec_normalize_env)  # type: ignore[union-attr]
+        guide_acts = replay_acts[rel_idxs[torch.isin(rel_idxs, guide_inds)[:, 0]]]
+        guide_rews = replay_data.rewards[
+            rel_idxs[torch.isin(rel_idxs, guide_inds)[:, 0]]
+        ]
+        guide_qs = q_vals[rel_idxs[torch.isin(rel_idxs, guide_inds)[:, 0]]]
 
-        def make_actions(observations, guide_inds, learner_inds, actions):
-            next_actions = torch.empty_like(actions)
-            if self.guide_randomness > 0:
-                random_max_ind = int(self.guide_randomness * len(guide_inds))
-                rand_inds = guide_inds[:random_max_ind]
-                next_actions[rand_inds] = torch.tensor(
-                    np.array(
-                        [self.action_space.sample() for _ in range(len(rand_inds))]
-                    ),
-                    device=next_actions.device,
-                    dtype=next_actions.dtype,
-                )
-            else:
-                random_max_ind = 0
-
-            guide_inds = guide_inds[random_max_ind:]
-            next_actions[guide_inds] = torch.tensor(
-                self.guide_policy.predict(
-                    observations[guide_inds].cpu().detach().numpy(), deterministic=True
-                )[0],
-                device=next_actions.device,
-                dtype=next_actions.dtype,
-            )
-            next_actions[learner_inds] = self.actor_target(observations[learner_inds])
-            return actions
-
-        guide_inds = torch.where(replay_data.used_learner == 0)[0]
-        learner_inds = torch.where(replay_data.used_learner == 1)[0]
-
-        with th.no_grad():
-            # Select action according to policy and add clipped noise
-            noise = replay_data.actions.clone().data.normal_(
-                0, self.target_policy_noise
-            )
-            noise = noise.clamp(-self.target_noise_clip, self.target_noise_clip)
-            next_actions = make_actions(
-                replay_data.next_observations,
-                guide_inds,
-                learner_inds,
-                replay_data.actions,
-            )
-            next_actions = (next_actions + noise).clamp(-1, 1)
-
-            # actions = make_actions(replay_data.next_observations)
-            # next_actions = (actions + noise).clamp(-1, 1)
-
-            # Compute the next Q-values: min over all critics targets
-            next_q_values = th.cat(
-                self.critic_target(replay_data.next_observations, next_actions), dim=1
-            )
-            next_q_values, _ = th.min(next_q_values, dim=1, keepdim=True)
-            target_q_values = (
-                replay_data.rewards
-                + (1 - replay_data.dones) * self.gamma * next_q_values
-            )
-
-        # Get current Q-values estimates for each critic network
-        current_q_values = self.critic(replay_data.observations, replay_data.actions)
-
-        guide_q_values_mean = current_q_values[0][guide_inds].mean().item()
-        learner_q_values_mean = current_q_values[0][learner_inds].mean().item()
-        guide_ts = (
-            replay_data.time_steps[guide_inds].cpu().numpy().astype("int64").flatten()
-        )
-        learner_ts = (
-            replay_data.time_steps[learner_inds].cpu().numpy().astype("int64").flatten()
+        mean_guide_acts = torch.mean(guide_acts, dim=0)
+        mean_guide_qs = torch.mean(guide_qs, dim=0)
+        learner_act = torch.argmax(mean_learner_acts)
+        logger.record(f"train/learner_act_{j}", learner_act.item())
+        logger.record(
+            f"train/g-l_q_values_{j}", (mean_guide_qs - mean_learner_qs).item()
         )
 
-        n = len(guide_q_dict)
+        j += 1
+        if i == -1:
+            # print(
+            #     f"Obs: {obs}, Learner acts: {torch.argmax(mean_learner_acts)}, N learner acts: {len(learner_acts)}, Guide acts: {torch.argmax(mean_guide_acts)}, N guide acts: {len(guide_acts)}"
+            # )
+            # print(f"Obs: {obs}, guide: {guide_qs[:5].flatten()}, guide acts: {guide_acts[:5]}/{torch.argmax(guide_acts[:5], dim=-1).flatten()}, guide rews: {guide_rews[:5].flatten()}\nlearner: {learner_qs[:5].flatten()}, learner acts: {torch.argmax(learner_acts[:10], dim=-1).flatten()}, learner rews: {learner_rews[:5].flatten()}")
+            pass
+
+
+def summarise_per_ts(
+    learner_dict, guide_dict, learner_inds, guide_inds, ts, summary_vals
+):
+    # summaries values per time step (ts) in the env: e.g. target_q_values, current_q_values, replay_data.rewards
+    guide_ts = ts[guide_inds].cpu().numpy().astype("int64").flatten()
+    learner_ts = ts[learner_inds].cpu().numpy().astype("int64").flatten()
+
+    if len(learner_ts) > 0:
+        import pdb
+
+        pdb.set_trace()
+
+    n = len(guide_dict)
+    sums = np.zeros(n, dtype=float)
+    counts = np.zeros(n, dtype=int)
+    np.add.at(sums, guide_ts, summary_vals[guide_inds].detach().cpu().numpy().flatten())
+    np.add.at(counts, guide_ts, 1)
+    guide_dict = (guide_dict + sums) / (1 + counts)
+
+    if len(learner_inds) > 0:
         sums = np.zeros(n, dtype=float)
         counts = np.zeros(n, dtype=int)
         np.add.at(
-            sums, guide_ts, target_q_values[guide_inds].detach().cpu().numpy().flatten()
+            sums,
+            learner_ts,
+            summary_vals[learner_inds].detach().cpu().numpy().flatten(),
         )
-        np.add.at(counts, guide_ts, 1)
-        guide_q_dict = (guide_q_dict + sums) / (1 + counts)
-
-        if len(learner_inds) > 0:
-            sums = np.zeros(n, dtype=float)
-            counts = np.zeros(n, dtype=int)
-            np.add.at(
-                sums,
-                learner_ts,
-                target_q_values[learner_inds].detach().cpu().numpy().flatten(),
-            )
-            np.add.at(counts, learner_ts, 1)
-
-        slices = 10
-        for i in range(slices):
-            start_idx = int(200 / slices * i)
-            end_idx = int(start_idx + 200 / slices)
-            guide_q_values_ts_mean = np.mean(guide_q_dict[start_idx:end_idx])
-            learner_q_values_ts_mean = np.mean(learner_q_dict[start_idx:end_idx])
-
-        used_learner.append(replay_data.used_learner.mean().item())
-        guide_q_values.append(guide_q_values_mean)
-        learner_q_values.append(learner_q_values_mean)
-        # Compute critic loss
-        critic_loss = sum(
-            F.mse_loss(current_q, target_q_values) for current_q in current_q_values
-        )
-        assert isinstance(critic_loss, th.Tensor)
-        critic_losses.append(critic_loss.item())
-
-        # Optimize the critics
-        self.critic.optimizer.zero_grad()
-        critic_loss.backward()
-        self.critic.optimizer.step()
-
-        # Delayed policy updates
-        if self._n_updates % self.policy_delay == 0:
-            # Compute actor loss
-            # actor_loss = -self.critic.q1_forward(replay_data.observations, self.actor(replay_data.observations)).mean()
-            # actions = make_actions(replay_data.observations)
-            actions = replay_data.noiseless_actions
-            actor_loss = -self.critic.q1_forward(
-                replay_data.observations, actions
-            ).mean()
-            actor_losses.append(actor_loss.item())
-
-            # Optimize the actor
-            self.actor.optimizer.zero_grad()
-            actor_loss.backward()
-            self.actor.optimizer.step()
-
-            polyak_update(
-                self.critic.parameters(), self.critic_target.parameters(), self.tau
-            )
-            polyak_update(
-                self.actor.parameters(), self.actor_target.parameters(), self.tau
-            )
-            # Copy running stats, see GH issue #996
-            polyak_update(
-                self.critic_batch_norm_stats, self.critic_batch_norm_stats_target, 1.0
-            )
-            polyak_update(
-                self.actor_batch_norm_stats, self.actor_batch_norm_stats_target, 1.0
-            )
-
-    self.logger.record("train/n_updates", self._n_updates, exclude="tensorboard")
-    if len(actor_losses) > 0:
-        self.logger.record("train/actor_loss", np.mean(actor_losses))
-    self.logger.record("train/critic_loss", np.mean(critic_losses))
-    slices = 10
-    for i in range(slices):
-        # Record the mean of the guide and learner Q-values for each slice
-        start_idx = int(200 / slices * i)
-        end_idx = int(start_idx + 200 / slices)
-        self.logger.record(
-            f"train/g-l_q_values_{i}",
-            np.mean(guide_q_dict[start_idx:end_idx])
-            - np.mean(learner_q_dict[start_idx:end_idx]),
-        )
-        # self.logger.record(f"train/learner_q_values_{i}", np.mean(learner_q_dict[start_idx:end_idx]))
-    self.logger.record(f"train/guide_q_values_mean", np.mean(guide_q_values))
-    self.logger.record(f"train/learner_q_values_mean", np.mean(learner_q_values))
-    self.logger.record("train/batch_learner_frac", np.mean(used_learner))
+        np.add.at(counts, learner_ts, 1)
+        learner_dict = (learner_dict + sums) / (1 + counts)
+    return learner_dict, guide_dict
 
 
 def train_simple_td3_patch(self, gradient_steps: int, batch_size: int = 100) -> None:
@@ -189,16 +92,16 @@ def train_simple_td3_patch(self, gradient_steps: int, batch_size: int = 100) -> 
     # Update learning rate according to lr schedule
     self._update_learning_rate([self.actor.optimizer, self.critic.optimizer])
 
+    max_steps = self.get_env().envs[0].spec.max_episode_steps
     actor_losses, critic_losses = [], []
-    guide_q_values, learner_q_values = [], []
     used_learner = []
-    guide_q_dict = np.zeros(200, dtype=float)
-    learner_q_dict = np.zeros(200, dtype=float)
+    guide_q_dict = np.zeros(max_steps, dtype=float)
+    learner_q_dict = np.zeros(max_steps, dtype=float)
     for _ in range(gradient_steps):
-
         # Sample replay buffer
-        if self.replay_buffer.pos < batch_size // 2 and not self.replay_buffer.full:
-            continue
+        if self.delay_training:
+            if self.replay_buffer.pos < batch_size // 2 and not self.replay_buffer.full:
+                continue
         self._n_updates += 1
         replay_data = self.replay_buffer.sample(batch_size, env=self._vec_normalize_env)  # type: ignore[union-attr]
 
@@ -226,7 +129,7 @@ def train_simple_td3_patch(self, gradient_steps: int, batch_size: int = 100) -> 
                 dtype=next_actions.dtype,
             )
             next_actions[learner_inds] = self.actor_target(observations[learner_inds])
-            return actions
+            return next_actions
 
         guide_inds = torch.where(replay_data.used_learner == 0)[0]
         learner_inds = torch.where(replay_data.used_learner == 1)[0]
@@ -251,77 +154,18 @@ def train_simple_td3_patch(self, gradient_steps: int, batch_size: int = 100) -> 
                 replay_data.rewards
                 + (1 - replay_data.dones) * self.gamma * next_q_values
             )
-            # target_q_values = replay_data.rewards
 
         # Get current Q-values estimates for each critic network
         current_q_values = self.critic(replay_data.observations, replay_data.actions)
 
-        # guide_q_values_mean = replay_data.rewards[guide_inds].mean().item()
-        # learner_q_values_mean = replay_data.rewards[learner_inds].mean().item()
-        guide_q_values_mean = target_q_values[guide_inds].mean().item()
-        learner_q_values_mean = target_q_values[learner_inds].mean().item()
-        guide_ts = (
-            replay_data.time_steps[guide_inds].cpu().numpy().astype("int64").flatten()
-        )
-        learner_ts = (
-            replay_data.time_steps[learner_inds].cpu().numpy().astype("int64").flatten()
-        )
+        # learner_q_dict, guide_q_dict = summarise_per_ts(learner_q_dict, guide_q_dict, learner_inds, guide_inds, replay_data.time_steps, target_q_values)
 
-        n = len(guide_q_dict)
-        sums = np.zeros(n, dtype=float)
-        counts = np.zeros(n, dtype=int)
-        # np.add.at(sums, guide_ts, replay_data.rewards[guide_inds].detach().cpu().numpy().flatten())
-        np.add.at(
-            sums, guide_ts, target_q_values[guide_inds].detach().cpu().numpy().flatten()
-        )
-        np.add.at(counts, guide_ts, 1)
-        guide_q_dict = (guide_q_dict + sums) / (1 + counts)
-
-        if len(learner_inds) > 0:
-            sums = np.zeros(n, dtype=float)
-            counts = np.zeros(n, dtype=int)
-            # np.add.at(sums, learner_ts, replay_data.rewards[learner_inds].detach().cpu().numpy().flatten())
-            np.add.at(
-                sums,
-                learner_ts,
-                target_q_values[learner_inds].detach().cpu().numpy().flatten(),
+        if "CombinationLock" in self.get_env().envs[0].spec.id:
+            find_mean_actions(
+                replay_data, learner_inds, guide_inds, target_q_values, self.logger
             )
-            np.add.at(counts, learner_ts, 1)
-            learner_q_dict = (learner_q_dict + sums) / (1 + counts)
-        obs = torch.tensor(
-            [-1.0] * 5,
-            device=replay_data.observations.device,
-            dtype=replay_data.observations.dtype,
-        )
-        j = 0
-        for i in range(-1, 5):
-
-            if i > -1:
-                obs[i] = i
-            rel_idxs = torch.argwhere(
-                torch.all(replay_data.observations == obs, dim=-1)
-            )
-            if len(rel_idxs) == 0:
-                continue
-
-            learner_acts = torch.mean(
-                replay_data.actions[rel_idxs[torch.isin(rel_idxs, learner_inds)[:, 0]]],
-                dim=0,
-            )
-            guide_acts = torch.mean(
-                replay_data.actions[rel_idxs[torch.isin(rel_idxs, guide_inds)[:, 0]]],
-                dim=0,
-            )
-            learner_act = torch.argmax(learner_acts)
-            self.logger.record(f"train/learner_act_{j}", learner_act.item())
-            j += 1
-            print(
-                f"N LEARNER: {np.sum(self.replay_buffer.used_learner)} Obs: {obs}, Learner acts: {learner_acts}, Guide acts: {guide_acts}"
-            )
-
         used_learner.append(replay_data.used_learner.mean().item())
-        guide_q_values.append(guide_q_values_mean)
-        learner_q_values.append(learner_q_values_mean)
+
         # Compute critic loss
         critic_loss = sum(
             F.mse_loss(current_q, target_q_values) for current_q in current_q_values
@@ -337,14 +181,22 @@ def train_simple_td3_patch(self, gradient_steps: int, batch_size: int = 100) -> 
         # Delayed policy updates
         if self._n_updates % self.policy_delay == 0:
             # Compute actor loss
-            actor_loss = -self.critic.q1_forward(
-                replay_data.observations[learner_inds],
-                self.actor(replay_data.observations[learner_inds]),
-            ).mean()
-            # actions = make_actions(replay_data.observations)
 
-            # actions = replay_data.noiseless_actions
-            # actor_loss = -self.critic.q1_forward(replay_data.observations, actions).mean()
+            if self.guide_in_actor_loss:
+                actions = torch.zeros_like(replay_data.noiseless_actions)
+                actions[guide_inds] = replay_data.actions[guide_inds]
+                actions[learner_inds] = self.actor(
+                    replay_data.observations[learner_inds]
+                )
+                actor_loss = -self.critic.q1_forward(
+                    replay_data.observations, actions
+                ).mean()
+            else:
+                actor_loss = -self.critic.q1_forward(
+                    replay_data.observations[learner_inds],
+                    self.actor(replay_data.observations[learner_inds]),
+                ).mean()
+
             actor_losses.append(actor_loss.item())
 
             # Optimize the actor
@@ -371,32 +223,6 @@ def train_simple_td3_patch(self, gradient_steps: int, batch_size: int = 100) -> 
         if len(actor_losses) > 0:
             self.logger.record("train/actor_loss", np.mean(actor_losses))
         self.logger.record("train/critic_loss", np.mean(critic_losses))
-        slices = len(self.curriculum_stages)
-        max_steps = self.get_env().envs[0].spec.max_episode_steps
-        for i in range(max_steps):
-            # Record the mean of the guide and learner Q-values for each slice
-            start_idx = int(max_steps / slices * i)
-            end_idx = int(start_idx + max_steps / slices)
-            self.logger.record(
-                f"train/g-l_q_values_{i}",
-                np.mean(guide_q_dict[start_idx:end_idx])
-                - np.mean(learner_q_dict[start_idx:end_idx]),
-            )
-            if (
-                self.curriculum_stage_idx == 9
-                and (
-                    np.mean(guide_q_dict[start_idx:end_idx])
-                    - np.mean(learner_q_dict[start_idx:end_idx])
-                )
-                == 0
-            ):
-                import pdb
-
-                pdb.set_trace()
-            # self.logger.record(f"train/learner_q_values_{i}", np.mean(learner_q_dict[start_idx:end_idx]))
-
-        # self.logger.record(f"train/guide_q_values_mean", np.mean(guide_q_values))
-        # self.logger.record(f"train/learner_q_values_mean", np.mean(learner_q_values))
         self.logger.record("train/batch_learner_frac", np.mean(used_learner))
 
 

@@ -1,99 +1,113 @@
 import argparse
 import ray
 from ray import tune
-from configuration import get_config
+from configuration import get_config, DEFAULT_CONFIG
 from grl_utils import run_grl_training, ray_grl_training, hyperparam_training
 import configuration as exp_config
+import copy
+import itertools
 
 
-def train(
-    env_name, horizon_fn, seeds, grl_buffer, multirun=False, tune=False, debug=False
-):
-    if tune:
-        hyperparam_training(get_config(env_name, horizon_fn, grl_buffer, debug))
-    elif not debug:
-        if multirun:
-            env_names = exp_config.env_names
-            horizon_fns = ["agent_type", "time_step"]
-            grl_buffer = [True, False]
-        else:
-            env_names = [env_name]
-            horizon_fns = [horizon_fn]
-            grl_buffer = [grl_buffer]
-        object_references = [
-            ray_grl_training.remote(get_config(env_name, horizon_fn, gb, debug), seed)
-            for env_name in env_names
-            for seed in range(seeds)
-            for horizon_fn in horizon_fns
-            for gb in grl_buffer
-        ]
+def collect_all_keys(d):
+    keys = []
+    for k, v in d.items():
+        keys.append(k)
+        if isinstance(v, dict):
+            updated_dict = {}
+            for sub_k, sub_v in v.items():
+                sub_k = k + "/" + sub_k
+                updated_dict[sub_k] = sub_v
+            d[k] = updated_dict
+            keys.extend(collect_all_keys(updated_dict))
+    return keys
 
-        all_data = []
-        while len(object_references) > 0:
-            finished, object_references = ray.wait(object_references, timeout=7.0)
-            data = ray.get(finished)
-            all_data.extend(data)
-    else:
-        run_grl_training(get_config(env_name, horizon_fn, grl_buffer, debug), 0)
+
+def parse_number(s):
+    if "[" in s and "]" in s:
+        return [parse_number(s) for s in s[1:-1].split(",")]
+    elif s == "True":
+        return True
+    elif s == "False":
+        return False
+    elif '"' in s or "'" in s:
+        return s[1:-1]
+    try:
+        return int(s)
+    except ValueError:
+        try:
+            return float(s)
+        except ValueError:
+            return s
+
+
+def train(train_args, multi_run):
+    if len(multi_run) == 0:
+        config = get_config(**train_args)
+        if "tune" in train_args and train_args["tune"]:
+            hyperparam_training(config)
+            return True
+        if "debug" in train_args and train_args["debug"]:
+            run_grl_training(config)
+            return True
+    object_references = []
+    idx_combos = itertools.product(*[list(range(multi_run[k])) for k in multi_run])
+    for idxs in idx_combos:
+        current = copy.deepcopy(train_args)
+        for n, name in enumerate(multi_run):
+            if len(name) > 1:
+                d = current
+                for key in name[:-1]:
+                    d = d.setdefault(key, {})
+                d[name[-1]] = d[name[-1]][idxs[n]]
+            else:
+                current[name[0]] = current[name[0]][idxs[n]]
+        print(current)
+        config = get_config(**current)
+        object_references.append(ray_grl_training.remote(config))
+
+    all_data = []
+    while len(object_references) > 0:
+        finished, object_references = ray.wait(object_references, timeout=7.0)
+        data = ray.get(finished)
+        all_data.extend(data)
+    return True
 
 
 if __name__ == "__main__":
+    DEFAULT_CONFIG_KEYS = collect_all_keys(copy.deepcopy(DEFAULT_CONFIG))
+
     argparse = argparse.ArgumentParser()
     argparse.add_argument(
-        "--env_name",
-        type=str,
-        help="Environment name",
-        default="AdroitHandHammer-v1",
-        required=False,
+        "--num_seeds", type=int, default=1, help="Number of seeds to run"
     )
-    argparse.add_argument(
-        "--horizon_fn",
-        type=str,
-        help="Curriculum horizon function",
-        default="agent_type",
-        required=False,
-    )
+    seed_arg, args = argparse.parse_known_args()
 
-    argparse.add_argument(
-        "--num_seeds",
-        type=int,
-        help="Number of experiments to run",
-        default=1,
-        required=False,
-    )
-    argparse.add_argument(
-        "--multirun",
-        action="store_true",
-        default=False,
-        help="Run all config options",
-        required=False,
-    )
-    argparse.add_argument(
-        "--tune",
-        action="store_true",
-        help="Run hyperparameter tuning on this environment",
-        required=False,
-    )
-    argparse.add_argument(
-        "--debug", action="store_true", help="Run in debug (no Ray)", required=False
-    )
+    arg_starts = [i for i, start in enumerate(args) if "--" in start]
+    arg_dict = {}
+    multi_run = {}
+    for j, arg_idx in enumerate(arg_starts):
+        if j == (len(arg_starts) - 1):
+            vals = args[arg_idx + 1 :]
+        else:
+            vals = args[arg_idx + 1 : arg_starts[j + 1]]
 
-    argparse.add_argument(
-        "--grl_buffer",
-        action="store_true",
-        default=False,
-        help="Use double buffer for guide and learner",
-        required=False,
-    )
+        arg_name = args[arg_idx][2:]  # removes --
+        parsed_vals = [parse_number(v) for v in vals]
+        if len(vals) == 1:
+            parsed_vals = parsed_vals[0]
+        parts = arg_name.split("/")
+        key_str = "\n".join(DEFAULT_CONFIG_KEYS)
+        assert (
+            arg_name in DEFAULT_CONFIG_KEYS
+        ), f"Argument {arg_name} not in DEFAULT_CONFIG_KEYS. Config options are:\n {key_str}"
+        if arg_name in DEFAULT_CONFIG_KEYS:
+            current = arg_dict
+            for p in parts[:-1]:
+                current = current.setdefault(p, {})
+            current[parts[-1]] = parsed_vals
+            if len(vals) > 1:
+                multi_run[tuple(parts)] = len(vals)
 
-    args = argparse.parse_args()
-
-    train(
-        args.env_name,
-        args.horizon_fn,
-        args.num_seeds,
-        args.grl_buffer,
-        args.multirun,
-        args.tune,
-        args.debug,
-    )
+    for seed in range(seed_arg.num_seeds):
+        arg_dict["seed"] = seed
+        success = train(arg_dict, multi_run)
