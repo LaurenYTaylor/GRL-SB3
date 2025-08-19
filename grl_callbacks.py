@@ -240,14 +240,12 @@ class CurriculumStageUpdateCallback(BaseCallback):
         if not hasattr(self, "best_eval_return"):
             self.best_eval_return = self.parent.model.guide_return
         # import pdb;pdb.set_trace()
-        N = 5
-        n = -10
-        prev_best = np.clip(
-            self.best_eval_return - self.parent.model.tolerance * (N - n), n, N
-        )
-        # prev_best = (
-        #    self.best_eval_return - self.parent.model.tolerance * self.best_eval_return
+        # prev_best = np.clip(
+        #    self.best_eval_return - self.parent.model.tolerance * (N - n), n, N
         # )
+        prev_best = (
+            self.best_eval_return - self.parent.model.tolerance * self.best_eval_return
+        )
         if len(self.parent.rolling_n_returns) == self.parent.model.rolling_mean_n:
             tune.report({"eval_return": self.parent.last_mean_reward})
             if np.mean(
