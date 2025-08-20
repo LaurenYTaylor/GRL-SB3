@@ -103,7 +103,7 @@ DEFAULT_CONFIG = {
         "train_freq": 1,
         "gradient_steps": 1,
         "learning_rate": 0.00005,
-        "action_noise": NormalActionNoise(mean=0.0, sigma=0.5),
+        # "action_noise": NormalActionNoise(mean=0.0, sigma=0.5),
         "replay_buffer_class": "GRLReplayBuffer",
         "replay_buffer_kwargs": {"perc_guide_sampled": ("cs", "cs")},
     },
