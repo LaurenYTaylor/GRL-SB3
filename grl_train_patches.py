@@ -100,7 +100,7 @@ def train_simple_td3_patch(self, gradient_steps: int, batch_size: int = 100) -> 
     for _ in range(gradient_steps):
         # Sample replay buffer
         if self.delay_training:
-            if self.replay_buffer.pos < batch_size // 2 and not self.replay_buffer.full:
+            if self.replay_buffer.pos < batch_size * 5 and not self.replay_buffer.full:
                 continue
         self._n_updates += 1
         replay_data = self.replay_buffer.sample(batch_size, env=self._vec_normalize_env)  # type: ignore[union-attr]
@@ -141,8 +141,13 @@ def train_simple_td3_patch(self, gradient_steps: int, batch_size: int = 100) -> 
             )
             noise = noise.clamp(-self.target_noise_clip, self.target_noise_clip)
 
-            # next_actions = make_actions(replay_data.next_observations, guide_inds, learner_inds, replay_data.actions)
-            next_actions = self.actor_target(replay_data.next_observations)
+            next_actions = make_actions(
+                replay_data.next_observations,
+                guide_inds,
+                learner_inds,
+                replay_data.actions,
+            )
+            # next_actions = self.actor_target(replay_data.next_observations)
             next_actions = (next_actions + noise).clamp(-1, 1)
 
             # Compute the next Q-values: min over all critics targets
@@ -317,7 +322,8 @@ def train_sac_patch(self, gradient_steps: int, batch_size: int = 64) -> None:
             next_actions, next_log_prob = self.actor.action_log_prob(
                 replay_data.next_observations
             )
-            # next_guide_actions,_ = self.guide_policy.predict(replay_data.next_observations.cpu(), deterministic=True)
+            # next_actions = torch.zeros_like(replay_data.actions)
+            # next_actions[guide_inds] = self.guide_policy.predict(replay_data.next_observations[guide_inds].cpu(), deterministic=True)
             # next_guide_actions = th.tensor(next_guide_actions, device=next_actions.device)
             # next_guide_log_prob = torch.clip(self.actor.action_dist.log_prob(next_guide_actions), -1e4, 1e4)
             # next_actions = (next_actions * selected_learner + next_guide_actions * selected_guide)

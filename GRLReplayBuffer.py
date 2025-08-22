@@ -105,7 +105,6 @@ class GRLReplayBuffer(ReplayBuffer):
             optimize_memory_usage,
             handle_timeout_termination,
         )
-        self.used_learner = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
         self.noiseless_actions = np.zeros(
             (self.buffer_size, self.n_envs, self.action_dim),
             dtype=self._maybe_cast_dtype(action_space.dtype),
@@ -115,10 +114,6 @@ class GRLReplayBuffer(ReplayBuffer):
         self.guide_observations = np.zeros(
             (self.buffer_size, self.n_envs, *self.obs_shape),
             dtype=observation_space.dtype,
-        )
-        self.used_learner = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
-        self.guide_used_learner = np.zeros(
-            (self.buffer_size, self.n_envs), dtype=np.float32
         )
 
         if not optimize_memory_usage:
@@ -207,11 +202,9 @@ class GRLReplayBuffer(ReplayBuffer):
         self.recent_used_learner = grl_info.get("used_learner", 0)
 
         if self.recent_used_learner:
-            self.used_learner[self.pos] = 1.0
             self.time_step[self.pos] = grl_info.get("time_step", 0)
             self.noiseless_actions[self.pos] = grl_info.get("noiseless_action", None)
         else:
-            self.guide_used_learner[self.guide_pos] = 0.0
             self.guide_timestep[self.guide_pos] = grl_info.get("time_step", 0)
             self.guide_noiseless_actions[self.guide_pos] = grl_info.get(
                 "noiseless_action", None
@@ -291,6 +284,7 @@ class GRLReplayBuffer(ReplayBuffer):
                 self.next_guide_observations[batch_inds, env_indices, :], env
             )
 
+        used_learner = np.zeros(self.guide_timestep.shape)
         data = (
             self._normalize_obs(
                 self.guide_observations[batch_inds, env_indices, :], env
@@ -308,7 +302,8 @@ class GRLReplayBuffer(ReplayBuffer):
             ),
             self.guide_noiseless_actions[batch_inds, env_indices, :],
             self.guide_timestep[batch_inds, env_indices].reshape(-1, 1),
-            self.guide_used_learner[batch_inds, env_indices].reshape(-1, 1),
+            # self.guide_used_learner[batch_inds, env_indices].reshape(-1, 1),
+            used_learner[batch_inds, env_indices].reshape(-1, 1),
         )
         return GRLReplayBufferSamples(*tuple(map(self.to_torch, data)))
 
@@ -328,6 +323,7 @@ class GRLReplayBuffer(ReplayBuffer):
                 self.next_observations[batch_inds, env_indices, :], env
             )
 
+        used_learner = np.ones(self.time_step.shape)
         data = (
             self._normalize_obs(self.observations[batch_inds, env_indices, :], env),
             self.actions[batch_inds, env_indices, :],
@@ -343,7 +339,7 @@ class GRLReplayBuffer(ReplayBuffer):
             ),
             self.noiseless_actions[batch_inds, env_indices, :],
             self.time_step[batch_inds, env_indices].reshape(-1, 1),
-            self.used_learner[batch_inds, env_indices].reshape(-1, 1),
+            used_learner[batch_inds, env_indices].reshape(-1, 1),
         )
         return GRLReplayBufferSamples(*tuple(map(self.to_torch, data)))
 

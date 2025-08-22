@@ -61,7 +61,6 @@ def train(train_args, multi_run):
                 d[name[-1]] = d[name[-1]][idxs[n]]
             else:
                 current[name[0]] = current[name[0]][idxs[n]]
-        print(current)
         config = get_config(**current)
         object_references.append(ray_grl_training.remote(config))
 
