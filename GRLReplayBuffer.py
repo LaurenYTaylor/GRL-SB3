@@ -366,3 +366,32 @@ class GRLReplayBuffer(ReplayBuffer):
             data[k] = data[k][idx]
 
         return GRLReplayBufferSamples(*tuple(map(self.to_torch, tuple(data.values()))))
+
+
+class GRLReplayBufferAlternate(GRLReplayBuffer):
+    def __init__(
+        self,
+        buffer_size: int,
+        observation_space: spaces.Space,
+        action_space: spaces.Space,
+        device: Union[th.device, str] = "auto",
+        n_envs: int = 1,
+        optimize_memory_usage: bool = False,
+        handle_timeout_termination: bool = True,
+        curric_vals: dict = None,
+        perc_guide_sampled: list[Union[float, str, None], Union[float, str, None]] = [
+            None,
+            None,
+        ],
+    ):
+        super().__init__(
+            buffer_size,
+            observation_space,
+            action_space,
+            device,
+            n_envs,
+            optimize_memory_usage,
+            handle_timeout_termination,
+            curric_vals,
+            perc_guide_sampled,
+        )

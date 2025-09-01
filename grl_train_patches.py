@@ -182,6 +182,7 @@ def train_simple_td3_patch(self, gradient_steps: int, batch_size: int = 100) -> 
         self.critic.optimizer.zero_grad()
         critic_loss.backward()
         self.critic.optimizer.step()
+        # import pdb;pdb.set_trace()
 
         # Delayed policy updates
         if self._n_updates % self.policy_delay == 0:
@@ -203,11 +204,20 @@ def train_simple_td3_patch(self, gradient_steps: int, batch_size: int = 100) -> 
                 ).mean()
 
             actor_losses.append(actor_loss.item())
-
             # Optimize the actor
+            self.actor.optimizer.param_groups[0]["lr"] = (
+                self.critic.optimizer.param_groups[0]["lr"] * 0.1
+            )
             self.actor.optimizer.zero_grad()
             actor_loss.backward()
             self.actor.optimizer.step()
+
+            print("critic grads:")
+            for param in self.critic.named_parameters():
+                print(f"{param[0]}: {param[1].grad.mean()}")
+            print("actor grads:")
+            for param in self.actor.named_parameters():
+                print(f"{param[0]}: {param[1].grad.mean()}")
 
             polyak_update(
                 self.critic.parameters(), self.critic_target.parameters(), self.tau
