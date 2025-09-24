@@ -523,12 +523,27 @@ def run_grl_training(config):
         sb3_eval.evaluate_policy = evaluate_policy_patch
 
     # Set up the model callbacks
+
+    import copy
+
+    wandb_config = copy.deepcopy(config)
+    if wandb_config["algo_config"]["replay_buffer_kwargs"]["perc_guide_sampled"] == [
+        0.5,
+        0.5,
+    ]:
+        wandb_config["algo_config"]["replay_buffer_kwargs"]["perc_guide_sampled"] = 0.5
+    if wandb_config["algo_config"]["replay_buffer_kwargs"]["perc_guide_sampled"] == [
+        "cs",
+        "cs",
+    ]:
+        wandb_config["algo_config"]["replay_buffer_kwargs"]["perc_guide_sampled"] = "cs"
+
     run = wandb.init(
         entity="lauren-taylor-the-university-of-adelaide",
         project=config["project_name"],
         sync_tensorboard=True,
         monitor_gym=True,
-        config=config,
+        config=wandb_config,
         save_code=False,
     )
 

@@ -97,6 +97,7 @@ if __name__ == "__main__":
             vals = args[arg_idx + 1 : arg_starts[j + 1]]
 
         arg_name = args[arg_idx][2:]  # removes --
+
         parsed_vals = [parse_number(v) for v in vals]
         if len(vals) == 1:
             parsed_vals = parsed_vals[0]
