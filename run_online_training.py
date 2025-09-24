@@ -40,29 +40,35 @@ def parse_number(s):
             return s
 
 
-def train(train_args, multi_run):
+def train(train_args, multi_run, num_seeds):
     if len(multi_run) == 0:
         config = get_config(**train_args)
         if "tune" in train_args and train_args["tune"]:
             hyperparam_training(config)
             return True
         if "debug" in train_args and train_args["debug"]:
-            run_grl_training(config)
+            for seed in range(num_seeds):
+                config["seed"] = seed
+                run_grl_training(config)
             return True
     object_references = []
-    idx_combos = itertools.product(*[list(range(multi_run[k])) for k in multi_run])
-    for idxs in idx_combos:
-        current = copy.deepcopy(train_args)
-        for n, name in enumerate(multi_run):
-            if len(name) > 1:
-                d = current
-                for key in name[:-1]:
-                    d = d.setdefault(key, {})
-                d[name[-1]] = d[name[-1]][idxs[n]]
-            else:
-                current[name[0]] = current[name[0]][idxs[n]]
-        config = get_config(**current)
-        object_references.append(ray_grl_training.remote(config))
+    idx_combos = list(
+        itertools.product(*[list(range(multi_run[k])) for k in multi_run])
+    )
+    for seed in range(num_seeds):
+        for idxs in idx_combos:
+            current = copy.deepcopy(train_args)
+            for n, name in enumerate(multi_run):
+                if len(name) > 1:
+                    d = current
+                    for key in name[:-1]:
+                        d = d.setdefault(key, {})
+                    d[name[-1]] = d[name[-1]][idxs[n]]
+                else:
+                    current[name[0]] = current[name[0]][idxs[n]]
+            config = get_config(**current)
+            config["seed"] = seed
+            object_references.append(ray_grl_training.remote(config))
 
     all_data = []
     while len(object_references) > 0:
@@ -107,6 +113,4 @@ if __name__ == "__main__":
             if len(vals) > 1:
                 multi_run[tuple(parts)] = len(vals)
 
-    for seed in range(seed_arg.num_seeds):
-        arg_dict["seed"] = seed
-        success = train(arg_dict, multi_run)
+    success = train(arg_dict, multi_run, seed_arg.num_seeds)

@@ -107,6 +107,9 @@ def timestep_action_choice(config):
 
     """
     use_learner = False
+    # breakpoint()
+
+    # print(config["env"].envs[0].get_total_steps())
 
     if len(config["curriculum_stages"]) == 0:
         return False, config["time_step"]
@@ -115,6 +118,26 @@ def timestep_action_choice(config):
         >= config["curriculum_stages"][config["curriculum_stage_idx"]]
     ):
         use_learner = True
+        try:
+
+            if (
+                (
+                    np.floor(
+                        config["env"].unwrapped.envs[0].get_total_steps()
+                        // config["env"].unwrapped.envs[0].spec.max_episode_steps
+                    )
+                )
+                % 2
+                == 0
+                and config["curriculum_stage_idx"] > 0
+                and (
+                    config["time_step"]
+                    < config["curriculum_stages"][config["curriculum_stage_idx"] - 1]
+                )
+            ):
+                use_learner = False
+        except AttributeError:
+            pass
     return use_learner, config["time_step"]
 
 

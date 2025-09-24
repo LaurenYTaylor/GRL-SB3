@@ -44,7 +44,11 @@ class ModifiedEvalCallback(EvalCallback):
             self.rolling_n_returns = deque(maxlen=self.model.rolling_mean_n)
         continue_training = True
 
-        if self.eval_freq > 0 and self.n_calls % self.eval_freq == 0:
+        if (
+            self.eval_freq > 0
+            and self.n_calls % self.eval_freq == 0
+            and self.model._n_updates > self.eval_freq
+        ):
             # Sync training and eval env if there is VecNormalize
             if self.model.get_vec_normalize_env() is not None:
                 try:
@@ -284,4 +288,19 @@ class CurriculumStageUpdateCallback(BaseCallback):
             "eval/curriculum_stage",
             self.parent.model.curriculum_stages[self.model.curriculum_stage_idx],
         )
+        return True
+
+
+class ReportResult(BaseCallback):
+    """
+    Custom callback that decides whether to use the guide or learner agent at each time step.
+    """
+
+    parent: EvalCallback
+
+    def __init__(self, verbose=0):
+        super().__init__(verbose)
+
+    def _on_step(self) -> bool:
+        tune.report({"eval_return": self.parent.last_mean_reward})
         return True

@@ -9,6 +9,8 @@ import gymnasium_robotics
 import numpy as np
 import gymnasium as gym
 import CombinationLockV1
+from ray.air.integrations.wandb import WandbLoggerCallback
+
 
 from ray import tune
 from pathlib import Path
@@ -18,6 +20,7 @@ from gymnasium import spaces
 from ray.tune.schedulers import ASHAScheduler
 from stable_baselines3.common.noise import ActionNoise
 from wandb.integration.sb3 import WandbCallback
+from stable_baselines3.common.callbacks import EvalCallback
 from stable_baselines3.common.vec_env import (
     DummyVecEnv,
     VecEnv,
@@ -28,6 +31,7 @@ from stable_baselines3.common import evaluation as sb3_eval
 from grl_callbacks import (
     CurriculumMgmtCallback,
     CurriculumStageUpdateCallback,
+    ReportResult,
     ModifiedEvalCallback,
 )
 from variance_trainer import StateDepFunction, VarianceLearner
@@ -42,7 +46,7 @@ import torch as th
 from torch.nn import functional as F
 from stable_baselines3.common.utils import polyak_update
 
-MODELS = {"SAC": SAC, "PPO": PPO}
+MODELS = {"SAC": SAC, "PPO": PPO, "TD3": TD3}
 
 
 def evaluate_guide_policy(
@@ -513,9 +517,10 @@ def run_grl_training(config):
     guide_return = np.mean(guide_episode_rewards)
 
     # Patch the algo with modified functions
-    TD3._sample_action = _sample_action_patch
-    TD3.train = train_simple_td3_patch
-    sb3_eval.evaluate_policy = evaluate_policy_patch
+    if config["grl_config"]["n_curriculum_stages"] > 1:
+        TD3._sample_action = _sample_action_patch
+        TD3.train = train_simple_td3_patch
+        sb3_eval.evaluate_policy = evaluate_policy_patch
 
     # Set up the model callbacks
     run = wandb.init(
@@ -529,28 +534,47 @@ def run_grl_training(config):
 
     callbacks = [
         WandbCallback(
-            gradient_save_freq=10000,
+            # gradient_save_freq=10000,
             model_save_path=config["save_model_path"],
             verbose=2,
         ),
-        CurriculumMgmtCallback(
-            guide_policy, np.mean(guide_return), guide_curric_vals, config["grl_config"]
-        ),
-        ModifiedEvalCallback(
-            eval_env,
-            best_model_save_path=config["algo_config"]["tensorboard_log"],
-            log_path=config["algo_config"]["tensorboard_log"],
-            eval_freq=config["eval_freq"],
-            n_eval_episodes=config["n_eval_episodes"],
-            callback_after_eval=CurriculumStageUpdateCallback(),
-        ),
     ]
+    if config["grl_config"]["n_curriculum_stages"] == 1:
+        callbacks.append(
+            EvalCallback(
+                eval_env,
+                best_model_save_path=config["algo_config"]["tensorboard_log"],
+                log_path=config["algo_config"]["tensorboard_log"],
+                eval_freq=config["eval_freq"],
+                n_eval_episodes=config["n_eval_episodes"],
+                callback_after_eval=ReportResult(),
+            )
+        )
+    else:
+        callbacks.append(
+            CurriculumMgmtCallback(
+                guide_policy,
+                np.mean(guide_return),
+                guide_curric_vals,
+                config["grl_config"],
+            )
+        )
+        callbacks.append(
+            ModifiedEvalCallback(
+                eval_env,
+                best_model_save_path=config["algo_config"]["tensorboard_log"],
+                log_path=config["algo_config"]["tensorboard_log"],
+                eval_freq=config["eval_freq"],
+                n_eval_episodes=config["n_eval_episodes"],
+                callback_after_eval=CurriculumStageUpdateCallback(),
+            )
+        )
 
     algo_config = config["algo_config"]
-    if config["grl_config"]["grl_buffer"] is not None:
+    if "grl_config" in config and config["grl_config"]["grl_buffer"]:
         algo_config["replay_buffer_kwargs"]["curric_vals"] = guide_reward_map
     # Train the model
-    model = TD3("MlpPolicy", env, seed=config["seed"], **algo_config)
+    model = TD3("MlpPolicy", env, seed=config["seed"], **config["algo_config"])
     model.learn(total_timesteps=config["training_steps"], callback=callbacks)
     run.finish()
 
@@ -561,18 +585,23 @@ def ray_grl_training(config):
 
 
 def hyperparam_training(hyperparam_config):
-    hyperparam_config["eval_freq"] = tune.choice([2500, 5000, 7500])
-    hyperparam_config["n_eval_episodes"] = tune.choice([50, 200])
-    hyperparam_config["grl_config"]["n_curriculum_stages"] = tune.choice([5, 10, 20])
-    hyperparam_config["algo_config"]["batch_size"] = tune.choice([64, 128, 256])
-    hyperparam_config["algo_config"]["train_freq"] = tune.choice([1, 16, 32])
-    hyperparam_config["algo_config"]["gradient_steps"] = tune.choice([1, 16, 32])
-    hyperparam_config["algo_config"]["learning_rate"] = tune.uniform(0.0001, 0.001)
+    # hyperparam_config["eval_freq"] = tune.choice([2500, 5000, 7500])
+    # hyperparam_config["n_eval_episodes"] = tune.choice([50, 200])
+    # hyperparam_config["grl_config"]["n_curriculum_stages"] = tune.choice([5, 10, 20])
+    hyperparam_config["algo_config"]["train_freq"] = tune.choice([16, 32, 64])
+    hyperparam_config["algo_config"]["gradient_steps"] = tune.choice([16, 32, 64])
+    hyperparam_config["algo_config"]["learning_rate"] = tune.uniform(0.0001, 0.005)
+    hyperparam_config["algo_config"]["gamma"] = tune.uniform(0.95, 0.99)
+    hyperparam_config["algo_config"]["buffer_size"] = tune.choice(
+        [10000, 100000, 1000000]
+    )
+    hyperparam_config["algo_config"]["batch_size"] = tune.choice([64, 128, 256, 512])
 
+    # trainable_with_resources = tune.with_resources(run_grl_training, {"cpu": 30})
     tuner = tune.Tuner(
         run_grl_training,
         tune_config=tune.TuneConfig(
-            num_samples=1,
+            num_samples=20,
             scheduler=ASHAScheduler(
                 time_attr="training_iteration",
                 grace_period=5,
@@ -582,7 +611,8 @@ def hyperparam_training(hyperparam_config):
         ),
         param_space=hyperparam_config,
         run_config=tune.RunConfig(
-            storage_path=Path("./hyperparam_results").resolve(), name="tuning"
+            storage_path=Path("./hyperparam_results").resolve(),
+            name="tuning",
         ),
     )
     tuner.fit()

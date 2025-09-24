@@ -54,7 +54,7 @@ algorithms = [
     "PPO",
     "SAC",
     "SAC",
-    "SAC",
+    "TD3",
 ]  # , #"SAC", "SAC", "PPO", "SAC"]
 # algorithms = ["SAC", "SAC", "PPO"]
 paths_dict = dict(
@@ -68,7 +68,7 @@ paths_dict = dict(
 )
 env_names.append("CombinationLock-v1")
 paths_dict["CombinationLock-v1"] = (
-    f"{os.getcwd()}/pretrained_10000/CombinationLock-v1_td3.zip"
+    f"{os.getcwd()}/pretrained_30000/CombinationLock-v1_expandedobs_td3_v2.zip"
 )
 algorithm_dict = dict(zip(env_names, algorithms))
 
@@ -98,12 +98,15 @@ DEFAULT_CONFIG = {
     },
     "algo_config": {
         "buffer_size": 100000,
-        "batch_size": 128,
-        "learning_starts": 0,
-        "train_freq": 1,
-        "gradient_steps": 1,
-        "learning_rate": 0.00005,
-        # "action_noise": NormalActionNoise(mean=0.0, sigma=0.1),
+        "batch_size": 512,
+        # "learning_starts": 0,
+        "train_freq": 64,
+        "gradient_steps": 64,
+        "learning_rate": 0.001,
+        "gamma": 0.97,
+        "policy_delay": 2,
+        # "action_noise": NormalActionNoise(mean=0.0, sigma=0.5),
+        # "target_policy_noise": 0.5,
         "replay_buffer_class": "GRLReplayBuffer",
         "replay_buffer_kwargs": {"perc_guide_sampled": ("cs", "cs")},
     },
@@ -115,19 +118,20 @@ def get_config(**kwargs):
     config = copy.deepcopy(DEFAULT_CONFIG)
     config = merger.merge(config, kwargs)
     config["pretrained_path"] = paths_dict[config["env_name"]]
-    config["algo"] = algorithm_dict.get(config["env_name"], "SAC")
+    config["algo"] = algorithm_dict.get(config["env_name"], "TD3")
     # config["grl_config"]["guide_randomness"] = config["grl_config"]["guide_randomness"] + (1 / config["grl_config"]["n_curriculum_stages"])
     debug, tune = "", ""
     if config["debug"]:
         debug = "-debug"
     if config["tune"]:
         tune = "-tune"
-    config["project_name"] = f"sb3-TD3{debug}{tune}"
+    config["project_name"] = f"sb3-TD3{debug}{tune}-tuned-extendobs-fixedseeds"
     config["log_path"] = (
         f"./saved_models/{config['env_name']}_{config['algo']}_{config['seed']}"
     )
-    config["algo_config"]["replay_buffer_class"] = globals()[
-        config["algo_config"]["replay_buffer_class"]
-    ]
+    if "replay_buffer_class" in config["algo_config"]:
+        config["algo_config"]["replay_buffer_class"] = globals()[
+            config["algo_config"]["replay_buffer_class"]
+        ]
     print(config)
     return config

@@ -188,7 +188,7 @@ class GRLReplayBuffer(ReplayBuffer):
                     next_obs
                 )
             else:
-                self.next_guide_observations[self.pos] = np.array(next_obs)
+                self.next_guide_observations[self.guide_pos] = np.array(next_obs)
             if self.handle_timeout_termination:
                 self.guide_timeouts[self.guide_pos] = np.array(
                     [info.get("TimeLimit.truncated", False) for info in infos]
@@ -228,6 +228,11 @@ class GRLReplayBuffer(ReplayBuffer):
                     int((1 - lower_samp) * batch_size),
                     int((1 - self.learner_frac) * batch_size),
                 )
+        elif lower_samp == "cs":
+            guide_batch_n = min(
+                int((upper_samp) * batch_size),
+                int((1 - self.learner_frac) * batch_size),
+            )
         elif isinstance(upper_samp, float) or isinstance(upper_samp, int):
             guide_batch_n = int((1 - lower_samp) * batch_size)
 

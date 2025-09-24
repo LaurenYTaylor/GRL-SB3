@@ -5,12 +5,14 @@ import torch as th
 from torch.nn import functional as F
 from stable_baselines3.common.utils import polyak_update
 
+torch.autograd.set_detect_anomaly(True)
+
 
 def find_mean_actions(replay_data, learner_inds, guide_inds, q_vals, logger):
     replay_obs = replay_data.observations
     replay_acts = replay_data.actions
     obs = torch.tensor(
-        [-1.0] * 5,
+        [-1.0] * 6,
         device=replay_obs.device,
         dtype=replay_obs.dtype,
     )
@@ -18,7 +20,7 @@ def find_mean_actions(replay_data, learner_inds, guide_inds, q_vals, logger):
     for i in range(-1, 5):
         if i > -1:
             obs[i] = i
-        rel_idxs = torch.argwhere(torch.all(replay_obs == obs, dim=-1))
+        rel_idxs = torch.argwhere(torch.all(replay_obs[:, :5] == obs[:5], dim=-1))
         if len(rel_idxs) == 0:
             continue
 
@@ -60,11 +62,6 @@ def summarise_per_ts(
     guide_ts = ts[guide_inds].cpu().numpy().astype("int64").flatten()
     learner_ts = ts[learner_inds].cpu().numpy().astype("int64").flatten()
 
-    if len(learner_ts) > 0:
-        import pdb
-
-        pdb.set_trace()
-
     n = len(guide_dict)
     sums = np.zeros(n, dtype=float)
     counts = np.zeros(n, dtype=int)
@@ -100,7 +97,7 @@ def train_simple_td3_patch(self, gradient_steps: int, batch_size: int = 100) -> 
     for _ in range(gradient_steps):
         # Sample replay buffer
         if self.delay_training:
-            if self.replay_buffer.pos < batch_size * 5 and not self.replay_buffer.full:
+            if self.replay_buffer.pos < batch_size // 2 and not self.replay_buffer.full:
                 continue
         self._n_updates += 1
         replay_data = self.replay_buffer.sample(batch_size, env=self._vec_normalize_env)  # type: ignore[union-attr]
@@ -119,7 +116,7 @@ def train_simple_td3_patch(self, gradient_steps: int, batch_size: int = 100) -> 
                 )
             else:
                 random_max_ind = 0
-
+            # breakpoint()
             guide_inds = guide_inds[random_max_ind:]
             next_actions[guide_inds] = torch.tensor(
                 self.guide_policy.predict(
@@ -141,13 +138,14 @@ def train_simple_td3_patch(self, gradient_steps: int, batch_size: int = 100) -> 
             )
             noise = noise.clamp(-self.target_noise_clip, self.target_noise_clip)
 
-            next_actions = make_actions(
-                replay_data.next_observations,
-                guide_inds,
-                learner_inds,
-                replay_data.actions,
-            )
-            # next_actions = self.actor_target(replay_data.next_observations)
+            # next_actions = make_actions(
+            #     replay_data.next_observations,
+            #     guide_inds,
+            #     learner_inds,
+            #     replay_data.actions,
+            # )
+            next_actions = self.actor_target(replay_data.next_observations)
+            # import pdb;pdb.set_trace()
             next_actions = (next_actions + noise).clamp(-1, 1)
 
             # Compute the next Q-values: min over all critics targets
@@ -164,11 +162,26 @@ def train_simple_td3_patch(self, gradient_steps: int, batch_size: int = 100) -> 
         current_q_values = self.critic(replay_data.observations, replay_data.actions)
 
         # learner_q_dict, guide_q_dict = summarise_per_ts(learner_q_dict, guide_q_dict, learner_inds, guide_inds, replay_data.time_steps, target_q_values)
-
         if "CombinationLock" in self.get_env().envs[0].spec.id:
             find_mean_actions(
                 replay_data, learner_inds, guide_inds, target_q_values, self.logger
             )
+            example_obs = torch.tensor(
+                [-1.0] * 6,
+                device=replay_data.observations.device,
+                dtype=replay_data.observations.dtype,
+            )
+            j = 0
+            for i in range(-1, 5):
+                if i > -1:
+                    example_obs[i] = i
+                learner_act = self.actor(torch.unsqueeze(example_obs, dim=0))
+                self.logger.record(
+                    f"train/current_learner_act_{j}",
+                    torch.argmax(learner_act[:5]).item(),
+                )
+                j += 1
+
         used_learner.append(replay_data.used_learner.mean().item())
 
         # Compute critic loss
@@ -182,21 +195,60 @@ def train_simple_td3_patch(self, gradient_steps: int, batch_size: int = 100) -> 
         self.critic.optimizer.zero_grad()
         critic_loss.backward()
         self.critic.optimizer.step()
-        # import pdb;pdb.set_trace()
 
         # Delayed policy updates
         if self._n_updates % self.policy_delay == 0:
             # Compute actor loss
-
             if self.guide_in_actor_loss:
-                actions = torch.zeros_like(replay_data.noiseless_actions)
-                actions[guide_inds] = replay_data.actions[guide_inds]
-                actions[learner_inds] = self.actor(
-                    replay_data.observations[learner_inds]
-                )
-                actor_loss = -self.critic.q1_forward(
-                    replay_data.observations, actions
-                ).mean()
+                actions = torch.zeros_like(replay_data.actions)
+                observations = torch.zeros_like(replay_data.observations)
+                learner_actions = self.actor(replay_data.observations)
+                if self._n_updates > 50:
+
+                    diffs = (
+                        current_q_values[0][guide_inds]
+                        - self.critic(
+                            replay_data.observations[guide_inds],
+                            learner_actions[guide_inds],
+                        )[0]
+                    )
+
+                    guide_acts_to_use_bool = (diffs > torch.std(diffs)).flatten()
+                    # for x in list(zip(replay_data.observations[guide_inds], guide_acts_to_use_bool)):
+                    #     if x[1]:
+                    #         print(x)
+                    # print("\n"*2)
+                    guide_acts_to_use = guide_inds[guide_acts_to_use_bool]
+                    guide_acts_to_not_use = guide_inds[~guide_acts_to_use_bool]
+                    actions[guide_acts_to_use] = replay_data.actions[guide_acts_to_use]
+                    observations[guide_acts_to_use] = replay_data.observations[
+                        guide_acts_to_use
+                    ]
+                    actions[guide_acts_to_not_use] = replay_data.actions[
+                        guide_acts_to_not_use
+                    ]
+                    random_indices = torch.randint(
+                        high=learner_inds.numel(), size=(len(guide_acts_to_not_use),)
+                    )
+                    actions[guide_acts_to_not_use] = replay_data.actions[
+                        learner_inds[random_indices]
+                    ]
+                    observations[guide_acts_to_not_use] = replay_data.observations[
+                        learner_inds[random_indices]
+                    ]
+                    # actions[guide_inds] = replay_data.actions[guide_inds]
+                    self.logger.record(
+                        "train/perc_guide_used_in_actor_loss",
+                        len(guide_acts_to_use) / batch_size,
+                    )
+                else:
+                    actions[guide_inds] = replay_data.actions[guide_inds]
+                    observations[guide_inds] = replay_data.observations[guide_inds]
+
+                actions[learner_inds] = learner_actions[learner_inds]
+                observations[learner_inds] = replay_data.observations[learner_inds]
+
+                actor_loss = -self.critic.q1_forward(observations, actions).mean()
             else:
                 actor_loss = -self.critic.q1_forward(
                     replay_data.observations[learner_inds],
@@ -205,19 +257,10 @@ def train_simple_td3_patch(self, gradient_steps: int, batch_size: int = 100) -> 
 
             actor_losses.append(actor_loss.item())
             # Optimize the actor
-            self.actor.optimizer.param_groups[0]["lr"] = (
-                self.critic.optimizer.param_groups[0]["lr"] * 0.1
-            )
+            # self.actor.optimizer.param_groups[0]['lr'] = self.critic.optimizer.param_groups[0]['lr']*.1
             self.actor.optimizer.zero_grad()
             actor_loss.backward()
             self.actor.optimizer.step()
-
-            print("critic grads:")
-            for param in self.critic.named_parameters():
-                print(f"{param[0]}: {param[1].grad.mean()}")
-            print("actor grads:")
-            for param in self.actor.named_parameters():
-                print(f"{param[0]}: {param[1].grad.mean()}")
 
             polyak_update(
                 self.critic.parameters(), self.critic_target.parameters(), self.tau

@@ -4,19 +4,29 @@ import os
 import numpy as np
 import CombinationLockV1
 
-training_steps = 10000
+training_steps = 30000
 episodes = 1000
 env_name = "CombinationLock-v1"
-algo = SAC
+algo = TD3
 env = gymnasium.make(
-    env_name, disable_env_checker=True, reward="dense", max_steps=10, verbose=True
+    env_name,
+    disable_env_checker=True,
+    reward="dense",
+    max_steps=10,
+    verbose=False,
+    expand_obs=True,
 )
 
-pretrained_path = f"{os.getcwd()}/pretrained_{training_steps}/{env_name}_td3.zip"
+pretrained_path = (
+    f"{os.getcwd()}/pretrained_{training_steps}/{env_name}_expandedobs_td3_v2.zip"
+)
+# pretrained_path=""
 try:
     policy = algo.load(pretrained_path, device="cpu")
 except (FileNotFoundError, IsADirectoryError):
-    policy = algo("MlpPolicy", env, verbose=1, device="cpu", learning_rate=0.0001)
+    policy = algo(
+        "MlpPolicy", env, verbose=1, device="cpu", learning_rate=0.0001, seed=0
+    )
     policy.learn(total_timesteps=training_steps)
     policy.save(pretrained_path)
     policy = algo.load(pretrained_path, device="cpu")
