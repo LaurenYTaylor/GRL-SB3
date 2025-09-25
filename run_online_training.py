@@ -40,7 +40,7 @@ def parse_number(s):
             return s
 
 
-def train(train_args, multi_run, num_seeds):
+def train(train_args, multi_run, num_seeds, start_seed=0):
     if len(multi_run) == 0:
         config = get_config(**train_args)
         if "tune" in train_args and train_args["tune"]:
@@ -55,7 +55,7 @@ def train(train_args, multi_run, num_seeds):
     idx_combos = list(
         itertools.product(*[list(range(multi_run[k])) for k in multi_run])
     )
-    for seed in range(num_seeds):
+    for seed in range(start_seed, start_seed + num_seeds):
         for idxs in idx_combos:
             current = copy.deepcopy(train_args)
             for n, name in enumerate(multi_run):
@@ -84,6 +84,12 @@ if __name__ == "__main__":
     argparse = argparse.ArgumentParser()
     argparse.add_argument(
         "--num_seeds", type=int, default=1, help="Number of seeds to run"
+    )
+    argparse.add_argument(
+        "--start_seed",
+        type=int,
+        default=0,
+        help="Run num_seeds starting from this seed",
     )
     seed_arg, args = argparse.parse_known_args()
 
@@ -114,4 +120,4 @@ if __name__ == "__main__":
             if len(vals) > 1:
                 multi_run[tuple(parts)] = len(vals)
 
-    success = train(arg_dict, multi_run, seed_arg.num_seeds)
+    success = train(arg_dict, multi_run, seed_arg.num_seeds, seed_arg.start_seed)
